@@ -340,6 +340,8 @@ class TranslateThread(ModuleThread):
                     series_context_path=series_path or None,
                     next_page=next_page,
                 )
+        if proj is not None and hasattr(self.translator, "set_translation_project"):
+            self.translator.set_translation_project(proj, page_key)
         skip = (
             getattr(cfg_module, 'skip_already_translated', False)
             and page
@@ -491,7 +493,11 @@ class TranslateThread(ModuleThread):
             self.blockSignals(False)
             self.finished_counter += 1
             if trans_success:
-                self.imgtrans_proj.update_page_progress(page_key, RunStatus.FIN_TRANSLATE)
+                # Record the target language so the page can seed LLM history only
+                # while it matches the current target.
+                self.imgtrans_proj.mark_translation_finished(
+                    page_key, getattr(self.translator, 'lang_target', '')
+                )
             self.progress_changed.emit(self.finished_counter)
 
             if not self.pipeline_finished() and delay > 0:
@@ -842,6 +848,10 @@ class ImgtransThread(QThread):
             series_context_path=series_path or None,
             next_page=next_page,
         )
+        # Context-aware LLM translation: snapshot the reusable history window and glossary
+        # for this page (upstream dmMaze/BallonsTranslator llm_context).
+        if hasattr(self.translator, "set_translation_project"):
+            self.translator.set_translation_project(self.imgtrans_proj, imgname)
 
     def _append_page_to_series_context(self, imgname: str, blk_list: list):
         """Append the translated page to the series context store for cross-chapter consistency."""
@@ -1579,6 +1589,7 @@ class ImgtransThread(QThread):
                     break
                 self._set_translation_context_for_page(imgname, pages_to_iterate)
                 blk_list = self.imgtrans_proj.pages[imgname]
+                translation_failed = False
                 skip = (
                     getattr(cfg_module, 'skip_already_translated', False)
                     and blk_list
@@ -1605,12 +1616,20 @@ class ImgtransThread(QThread):
                             register_batch_skip(imgname, "translation", str(e))
                         except Exception:
                             pass
+                        translation_failed = True
                         for blk in blk_list:
                             if getattr(blk, "translation", None) is None or str(blk.translation).strip() == "":
                                 blk.translation = "[Translation failed]"
                 self._append_page_to_series_context(imgname, blk_list)
                 self.translate_counter += 1
-                self.imgtrans_proj.update_page_progress(imgname, RunStatus.FIN_TRANSLATE)
+                if translation_failed:
+                    self.imgtrans_proj.update_page_progress(imgname, RunStatus.FIN_TRANSLATE)
+                else:
+                    # Record the target language so the page can seed LLM history only
+                    # while it matches the current target.
+                    self.imgtrans_proj.mark_translation_finished(
+                        imgname, getattr(self.translator, 'lang_target', '')
+                    )
                 self.update_translate_progress.emit(self.translate_counter)
                 log_diagnostic_event(
                     "pipeline.translate_finish",

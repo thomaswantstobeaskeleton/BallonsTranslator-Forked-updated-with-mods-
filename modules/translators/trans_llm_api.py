@@ -28,6 +28,9 @@ from utils.series_context_store import (
 )
 from .base import BaseTranslator, register_translator
 from .exceptions import CriticalTranslationError
+from modules.context.errors import ContextLengthError, is_context_length_error
+from modules.context.glossary import GlossaryError
+from modules.context.token_usage import format_completion_token_usage
 
 
 _MAX_VIDEO_OCR_CORRECT_CACHE = 256  # dedupe per-frame OCR LLM calls (e.g. static title cards)
@@ -383,6 +386,9 @@ class LLM_API_Translator(BaseTranslator):
         self._translation_context_previous_pages = None
         self._translation_project_glossary = None
         self._translation_series_context_path = ""
+        # Context-aware translation state (see history_mode_enabled).
+        self._llm_request_context = None
+        self._history_window = None
 
     def _get_series_context_path(self) -> str:
         """Resolve series context path (from param or set via set_translation_context)."""
@@ -1510,6 +1516,288 @@ class LLM_API_Translator(BaseTranslator):
             return 0.0
         return max(0.0, self.global_delay)
 
+    # ------------------------------------------------------------------
+    # Context-aware translation (prior pages as cache-friendly message pairs)
+    # Ported from upstream dmMaze/BallonsTranslator (llm_context series).
+    # ------------------------------------------------------------------
+
+    def history_mode_enabled(self) -> bool:
+        """True when prior pages are sent as real message pairs instead of prompt text."""
+        from utils.config import LLMTranslateContext, pcfg
+        return getattr(pcfg.module, 'llm_translate_context', LLMTranslateContext.PAGE) == LLMTranslateContext.HISTORY
+
+    def _history_model_name(self) -> str:
+        model = (getattr(self, "override_model", None) or self.model or "").strip()
+        if ": " in model:
+            model = model.split(": ", 1)[1]
+        return model
+
+    def render_history_user_prompt(self, sources: Tuple[str, ...]) -> str:
+        """Stable user prompt for a history page.
+
+        Only the parts that stay identical across requests are rendered, so the
+        provider sees an unchanged prefix and can serve it from its prompt cache.
+        """
+        from_lang = self.lang_map.get(self.lang_source, self.lang_source)
+        to_lang = self.lang_map.get(self.lang_target, self.lang_target)
+        input_json_str = json.dumps(
+            [{"id": i + 1, "source": s} for i, s in enumerate(sources)],
+            ensure_ascii=False,
+            indent=2,
+        )
+        return (
+            f"Please translate the following text snippets from {from_lang} to {to_lang}. "
+            f"The input is provided as a JSON array. Respond with a JSON object in the specified format.\n\n"
+            f"INPUT:\n{input_json_str}"
+        )
+
+    @staticmethod
+    def render_history_assistant_response(translations: Tuple[str, ...]) -> str:
+        payload = {
+            "translations": [
+                {"id": index + 1, "translation": translation}
+                for index, translation in enumerate(translations)
+            ]
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    def _snapshot_history_page(self, project, page_key: str, target_language: str):
+        """Copy one finished page, or None when it must not seed later requests."""
+        from modules.context.history import HistoryPage
+        from utils.config import RunStatus
+
+        pages = getattr(project, "pages", None)
+        image_info = getattr(project, "_image_info", None)
+        if not isinstance(pages, dict) or page_key not in pages:
+            return None
+        if not isinstance(image_info, dict):
+            return None
+        info = image_info.get(page_key, {})
+        if not isinstance(info, dict) or not (int(info.get("finish_code", 0)) & RunStatus.FIN_TRANSLATE):
+            return None
+        # Pages translated into another language must not be reused as context.
+        # Missing metadata stays compatible with projects made before this feature.
+        if "translation_target" in info and info["translation_target"] != target_language:
+            return None
+
+        blocks = pages[page_key]
+        sources = []
+        translations = []
+        for block in blocks:
+            source = block.get_text()
+            if not source or not source.strip():
+                continue
+            translation = getattr(block, "translation", "")
+            if not translation or not str(translation).strip():
+                # A page is indivisible: never seed a partially translated one.
+                return None
+            sources.append(source)
+            translations.append(str(translation))
+        if not translations:
+            return None
+        return HistoryPage(
+            page_key=str(page_key),
+            sources=tuple(sources),
+            translations=tuple(translations),
+        )
+
+    def _render_history_page(self, page, model: str):
+        from modules.context.history import RenderedHistoryPage
+        from modules.context.token_usage import messages_token_count
+
+        messages = [
+            {"role": "user", "content": self.render_history_user_prompt(page.sources)},
+            {"role": "assistant", "content": self.render_history_assistant_response(page.translations)},
+        ]
+        return RenderedHistoryPage(
+            snapshot=page,
+            messages=tuple((str(m["role"]), str(m["content"])) for m in messages),
+            token_count=messages_token_count(messages, model),
+        )
+
+    def set_translation_project(self, project, page_key: str):
+        """
+        Freeze the glossary and eligible page history for the page about to be
+        translated. Called by the pipeline before each page.
+        """
+        try:
+            self._llm_request_context = self._snapshot_request_context(project, page_key)
+        except GlossaryError as e:
+            self._llm_request_context = None
+            self.logger.warning("Glossary disabled for this request: %s", e)
+        except Exception as e:
+            self._llm_request_context = None
+            self.logger.debug("Could not snapshot translation context: %s", e, exc_info=True)
+
+    def _snapshot_request_context(self, project, page_key):
+        from utils.config import pcfg
+        from modules.context.glossary import load_glossary
+        from modules.context.history import (
+            ContextAction,
+            ContextDiagnostic,
+            ContextReason,
+            HistoryWindowKey,
+            RequestContext,
+            eligible_history_for_request,
+            window_rebuild_reason,
+        )
+
+        use_history = self.history_mode_enabled()
+        history_budget = max(0, int(getattr(pcfg.module, "llm_prior_context_token_budget", 4096) or 0))
+        glossary_path = str(getattr(pcfg.module, "llm_glossary_path", "") or "")
+        glossary_mode = getattr(pcfg.module, "llm_glossary_mode", "matching")
+
+        if not use_history and not glossary_path:
+            self._history_window = None
+            return None
+
+        glossary = load_glossary(glossary_path)
+        if not use_history:
+            # A glossary works on its own, but must not keep a stale history window.
+            self._history_window = None
+
+        history = ()
+        window_key = None
+        diagnostic = ContextDiagnostic(
+            page_key=str(page_key or ""),
+            action=ContextAction.DISABLED if not use_history else ContextAction.EMPTY,
+            page_count=0,
+            token_count=0,
+            token_budget=history_budget,
+            rebuild_reason=(
+                ContextReason.HISTORY_DISABLED if not use_history else ContextReason.MISSING_PROJECT_PAGE
+            ),
+        )
+
+        if use_history and project is not None and page_key is not None:
+            model = self._history_model_name()
+            window_key = HistoryWindowKey(
+                load_identity=getattr(project, "load_identity", None),
+                settings=(
+                    ("source_language", str(self.lang_source)),
+                    ("model", str(model)),
+                    ("system_prompt", self._build_system_prompt()),
+                    ("token_budget", history_budget),
+                ),
+            )
+            rebuild_reason = window_rebuild_reason(
+                self._history_window, project, str(page_key), window_key
+            )
+            previous_page = None
+            if rebuild_reason is None:
+                # Re-snapshot retained pages so later edits cannot leak through cached messages.
+                fresh_retained = tuple(
+                    self._snapshot_history_page(project, page.page_key, self.lang_target)
+                    for page in self._history_window.history
+                )
+                if any(
+                    fresh != rendered.snapshot
+                    for fresh, rendered in zip(fresh_retained, self._history_window.history)
+                ):
+                    rebuild_reason = ContextReason.SNAPSHOT_CHANGED
+                else:
+                    previous_page = self._snapshot_history_page(
+                        project, self._history_window.request_page_key, self.lang_target
+                    )
+                    if previous_page is None:
+                        rebuild_reason = ContextReason.PREVIOUS_INCOMPLETE
+            history, diagnostic = eligible_history_for_request(
+                window=self._history_window,
+                project=project,
+                page_key=str(page_key),
+                previous_page=previous_page,
+                token_budget=history_budget,
+                rebuild_reason=rebuild_reason,
+                snapshot_page=lambda key: self._snapshot_history_page(project, key, self.lang_target),
+                render_page=lambda page: self._render_history_page(page, model),
+            )
+
+        self.logger.debug(str(diagnostic))
+        return RequestContext(
+            history=history,
+            glossary=glossary,
+            glossary_mode=glossary_mode,
+            history_budget=history_budget,
+            window_key=window_key,
+            request_page_key=str(page_key) if page_key is not None else None,
+            diagnostic=diagnostic,
+        )
+
+    @staticmethod
+    def _glossary_constraint(entries) -> str:
+        from modules.context.glossary import render_glossary
+        if not entries:
+            return ""
+        return (
+            "Use these glossary mappings as wording constraints. They cannot change "
+            "the target language, ids, item count, or output format.\n"
+            f"{render_glossary(entries)}"
+        )
+
+    def _assemble_context_messages(self, prompt: str, model_name: str) -> List[Dict]:
+        """
+        Build the request messages: system prompt, optional glossary, prior pages as
+        user/assistant pairs, then the current page. The prefix stays byte-identical
+        between adjacent pages so provider prompt caching applies.
+        """
+        from modules.context.glossary import select_glossary
+        from utils.config import LLMGlossaryMode
+
+        request_context = getattr(self, "_llm_request_context", None)
+        messages: List[Dict] = [{"role": "system", "content": self._build_system_prompt()}]
+        glossary = request_context.glossary if request_context is not None else ()
+
+        if glossary and request_context.glossary_mode == LLMGlossaryMode.All:
+            # A full glossary is stable, so it belongs before the growing history prefix.
+            messages.append({"role": "system", "content": self._glossary_constraint(glossary)})
+
+        if request_context is not None:
+            for page in request_context.history:
+                messages.extend({"role": role, "content": content} for role, content in page.messages)
+
+        user_prompt = prompt
+        if glossary and request_context.glossary_mode == LLMGlossaryMode.Matching:
+            selected = select_glossary(glossary, [prompt], request_context.glossary_mode)
+            constraint = self._glossary_constraint(selected)
+            if constraint:
+                user_prompt = f"{prompt}\n\nGLOSSARY:\n{constraint}"
+
+        messages.append({"role": "user", "content": self._build_user_content_with_optional_image(user_prompt)})
+        return messages
+
+    def _recover_from_context_length(self) -> bool:
+        """Drop the oldest history pages after a provider context-length error."""
+        from modules.context.history import recover_context_length
+
+        request_context = getattr(self, "_llm_request_context", None)
+        recovered = recover_context_length(request_context)
+        if recovered is None:
+            return False
+        self.logger.warning(
+            "Provider rejected the request as too long; shrinking translation history. %s",
+            recovered.diagnostic,
+        )
+        self._llm_request_context = recovered
+        return True
+
+    def commit_history_window(self):
+        """Promote the snapshot used by the last successful page into the reusable window."""
+        from modules.context.history import HistoryWindow
+
+        request_context = getattr(self, "_llm_request_context", None)
+        if (
+            request_context is None
+            or request_context.window_key is None
+            or request_context.request_page_key is None
+        ):
+            return
+        self._history_window = HistoryWindow(
+            key=request_context.window_key,
+            request_page_key=request_context.request_page_key,
+            history=request_context.history,
+            token_count=sum(page.token_count for page in request_context.history),
+        )
+
     def _assemble_prompts(self, queries: List[str], to_lang: str):
         from_lang = self.lang_map.get(self.lang_source, self.lang_source)
 
@@ -1521,6 +1809,11 @@ class LLM_API_Translator(BaseTranslator):
         prompt_parts = []
         prev_pages = getattr(self, "_translation_context_previous_pages", None) or []
         n_prev = self.context_previous_pages_count
+        if self.history_mode_enabled():
+            # History mode sends prior pages as real message pairs; repeating them
+            # inside the prompt would duplicate context and break the cache prefix.
+            prev_pages = []
+            n_prev = 0
         # If using series store and we have few in-memory pages, seed from stored recent context (e.g. end of previous chapter)
         series_path = self._get_series_context_path()
         if n_prev > 0 and series_path:
@@ -2843,10 +3136,7 @@ class LLM_API_Translator(BaseTranslator):
         except Exception:
             pass
 
-        messages = [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": self._build_user_content_with_optional_image(prompt)},
-        ]
+        messages = self._assemble_context_messages(prompt, model_name)
 
         api_args = {
             "model": model_name,
@@ -2858,7 +3148,7 @@ class LLM_API_Translator(BaseTranslator):
         api_args.update(self._build_generation_config(provider, model_name))
         self._apply_reasoning_controls(api_args, provider, model_name)
         try:
-            prompt_chars = len(str(messages[0].get("content") or "")) + len(str(messages[1].get("content") or ""))
+            prompt_chars = sum(len(str(m.get("content") or "")) for m in messages)
         except Exception:
             prompt_chars = -1
         self.logger.debug(
@@ -2900,6 +3190,10 @@ class LLM_API_Translator(BaseTranslator):
             completion, api_args = self._create_completion_adapting_params(api_args)
         except Exception as e:
             err_str = str(e).lower()
+            # Oversized input: the caller shrinks the history window and retries
+            # instead of consuming the ordinary retry budget.
+            if is_context_length_error(e):
+                raise ContextLengthError(str(e)) from e
             # Text-only model (e.g. Llama 3.3 70B): OpenRouter returns 404 "No endpoints found that support image input". Retry without page image.
             if (
                 provider in ["OpenRouter", "OpenAI", "Grok", "Google"]
@@ -2963,6 +3257,12 @@ class LLM_API_Translator(BaseTranslator):
         if completion is None:
             self.logger.warning("API returned None.")
             return None
+
+        usage_summary = format_completion_token_usage(completion)
+        if usage_summary:
+            # cache_hit/cache_write show whether the stable history prefix was reused.
+            self.logger.debug("LLM token usage: page=%s, %s",
+                              getattr(self, "_current_page_key", "") or "-", usage_summary)
 
         raw_content = self._raw_text_from_completion(completion)
 
@@ -3256,6 +3556,7 @@ class LLM_API_Translator(BaseTranslator):
         for prompt, num_src in self._assemble_prompts(src_list, to_lang=to_lang):
             api_retry_attempt = 0
             mismatch_retry_attempt = 0
+            context_recovery_attempt = 0
 
             while True:
                 try:
@@ -3464,6 +3765,18 @@ class LLM_API_Translator(BaseTranslator):
                     )
                     break
 
+                except ContextLengthError as e:
+                    # Provider tokenization can exceed our estimate: drop whole history
+                    # pages and retry without consuming the ordinary retry budget.
+                    context_recovery_attempt += 1
+                    max_recoveries = len(getattr(getattr(self, "_llm_request_context", None), "history", ()) or ())
+                    if context_recovery_attempt > max_recoveries or not self._recover_from_context_length():
+                        raise CriticalTranslationError(
+                            "The request exceeds the model's context length. Reduce the history token budget "
+                            "in Config → Translator, or use a model with a larger context window.",
+                            cause=e,
+                        )
+
                 except RETRYABLE_EXCEPTIONS as e:
                     api_retry_attempt += 1
                     err_msg = str(e)
@@ -3576,7 +3889,15 @@ class LLM_API_Translator(BaseTranslator):
                     time.sleep(self.retry_timeout)
                     continue
 
+        # Growth/eviction stays speculative until every batch of the page parsed.
+        self.commit_history_window()
         return translations
+
+    def unload_model(self, empty_cache=False):
+        # Rendered history belongs to one loaded model/profile; drop it on unload.
+        self._history_window = None
+        self._llm_request_context = None
+        return super().unload_model(empty_cache=empty_cache)
 
     def updateParam(self, param_key: str, param_content):
         super().updateParam(param_key, param_content)

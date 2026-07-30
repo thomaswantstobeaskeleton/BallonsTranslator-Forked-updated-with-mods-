@@ -21,6 +21,33 @@ class RunStatus:
     FIN_ALL = 15
 
 
+class LLMTranslateContext:
+    """How much prior context an LLM translator sends with each request.
+
+    ``page`` keeps the legacy prompt (current page only); ``history`` prepends
+    previously translated pages as cache-friendly message pairs.
+
+    >>> LLMTranslateContext.HISTORY
+    'history'
+    """
+
+    PAGE = 'page'
+    HISTORY = 'history'
+    Valid = (PAGE, HISTORY)
+
+
+class LLMGlossaryMode:
+    """Which glossary entries are sent with a request.
+
+    >>> LLMGlossaryMode.Matching
+    'matching'
+    """
+
+    Matching = 'matching'
+    All = 'all'
+    Valid = (Matching, All)
+
+
 class OCRTextPostprocess:
     """Letter case applied to OCR results (upstream dmMaze/BallonsTranslator#1248).
 
@@ -57,6 +84,14 @@ class ModuleConfig(Config):
     ocr_font_detect: bool = False
     # Letter case applied to OCR results: none | capitalize | uppercase
     ocr_text_postprocess: str = OCRTextPostprocess.NONE
+    # LLM request context: 'page' (current page only) or 'history' (previously
+    # translated pages as cache-friendly message pairs).
+    llm_translate_context: str = LLMTranslateContext.PAGE
+    # Token budget for the rolling history window of prior pages.
+    llm_prior_context_token_budget: int = 4096
+    # Optional glossary file (.json / .txt / .tsv) applied to LLM translation.
+    llm_glossary_path: str = ''
+    llm_glossary_mode: str = LLMGlossaryMode.Matching
     textdetector_params: Dict = field(default_factory=lambda: dict())
     # Allow text detection to set box rotation when text is slanted (horizontal only). When off, horizontal boxes stay 0°.
     allow_detection_box_rotation: bool = False
@@ -472,6 +507,18 @@ class ModuleConfig(Config):
     def __post_init__(self):
         if self.ocr_text_postprocess not in OCRTextPostprocess.Valid:
             self.ocr_text_postprocess = OCRTextPostprocess.NONE
+        if self.llm_translate_context not in LLMTranslateContext.Valid:
+            self.llm_translate_context = LLMTranslateContext.PAGE
+        if not isinstance(self.llm_glossary_path, str):
+            self.llm_glossary_path = ''
+        if self.llm_glossary_mode not in LLMGlossaryMode.Valid:
+            self.llm_glossary_mode = LLMGlossaryMode.Matching
+        if (
+            not isinstance(self.llm_prior_context_token_budget, int)
+            or isinstance(self.llm_prior_context_token_budget, bool)
+            or self.llm_prior_context_token_budget <= 0
+        ):
+            self.llm_prior_context_token_budget = 4096
         self.update_finish_code()
 
     def update_finish_code(self):

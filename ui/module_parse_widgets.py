@@ -485,7 +485,7 @@ class TranslatorConfigPanel(ModuleConfigParseWidget):
         st_layout.addWidget(ParamNameLabel(self.tr('Target')))
         st_layout.addWidget(self.target_combobox)
         
-        self.vlayout.insertLayout(1, st_layout) 
+        self.vlayout.insertLayout(1, st_layout)
         self.vlayout.addWidget(self.manual_helper_widget)
         self.vlayout.addWidget(self.testTranslatorBtn)
         self.vlayout.addWidget(self.translateByTextblockBox)
@@ -493,6 +493,76 @@ class TranslatorConfigPanel(ModuleConfigParseWidget):
         self.vlayout.addWidget(self.translationContextBtn)
         self.vlayout.addWidget(self.replacePreMTkeywordBtn)
         self.vlayout.addWidget(self.replaceMTkeywordBtn)
+        self._add_llm_context_widgets(scrollWidget)
+
+    def _add_llm_context_widgets(self, scrollWidget: QWidget = None):
+        """Context-aware LLM translation settings (prior pages + glossary file)."""
+        from utils.config import LLMGlossaryMode, LLMTranslateContext
+
+        self.vlayout.addWidget(ParamNameLabel(self.tr('LLM context')))
+
+        ctx_hl = QHBoxLayout()
+        ctx_hl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        ctx_hl.addWidget(QLabel(self.tr('Prior context:')))
+        self._llm_context_modes = (LLMTranslateContext.PAGE, LLMTranslateContext.HISTORY)
+        self.llm_context_combobox = ConfigComboBox(scrollWidget=scrollWidget)
+        self.llm_context_combobox.addItems([self.tr('Current page only'), self.tr('Previously translated pages')])
+        self.llm_context_combobox.setToolTip(self.tr(
+            'Send previously translated pages of the project as prior conversation turns so names, terminology '
+            'and tone stay consistent. The prefix is kept stable between adjacent pages, so providers that cache '
+            'prompts charge less for it.'))
+        mode = getattr(pcfg.module, 'llm_translate_context', LLMTranslateContext.PAGE)
+        self.llm_context_combobox.setCurrentIndex(
+            self._llm_context_modes.index(mode) if mode in self._llm_context_modes else 0)
+        self.llm_context_combobox.currentIndexChanged.connect(self._on_llm_context_mode_changed)
+        ctx_hl.addWidget(self.llm_context_combobox)
+        ctx_hl.addWidget(QLabel(self.tr('Token budget:')))
+        self.llm_context_budget_spin = QSpinBox()
+        self.llm_context_budget_spin.setRange(256, 262144)
+        self.llm_context_budget_spin.setSingleStep(1024)
+        self.llm_context_budget_spin.setValue(int(getattr(pcfg.module, 'llm_prior_context_token_budget', 4096) or 4096))
+        self.llm_context_budget_spin.setToolTip(self.tr(
+            'How many tokens of prior pages may be sent. Older pages are dropped once the budget is reached.'))
+        self.llm_context_budget_spin.valueChanged.connect(self._on_llm_context_budget_changed)
+        ctx_hl.addWidget(self.llm_context_budget_spin)
+        self.vlayout.addLayout(ctx_hl)
+
+        glossary_hl = QHBoxLayout()
+        glossary_hl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        glossary_hl.addWidget(QLabel(self.tr('Glossary file:')))
+        self.llm_glossary_edit = QLineEdit()
+        self.llm_glossary_edit.setPlaceholderText(self.tr('optional .json / .txt / .tsv'))
+        self.llm_glossary_edit.setText(str(getattr(pcfg.module, 'llm_glossary_path', '') or ''))
+        self.llm_glossary_edit.setToolTip(self.tr(
+            'Terms the model must follow. Formats: JSON [{"src": "...", "dst": "...", "info": "..."}], '
+            '"source->translation #note" lines, or tab-separated columns.'))
+        self.llm_glossary_edit.textChanged.connect(self._on_llm_glossary_path_changed)
+        glossary_hl.addWidget(self.llm_glossary_edit)
+        self._llm_glossary_modes = (LLMGlossaryMode.Matching, LLMGlossaryMode.All)
+        self.llm_glossary_mode_combobox = ConfigComboBox(scrollWidget=scrollWidget)
+        self.llm_glossary_mode_combobox.addItems([self.tr('Matching terms only'), self.tr('Whole glossary')])
+        self.llm_glossary_mode_combobox.setToolTip(self.tr(
+            'Matching sends only the terms found on the page; whole glossary sends every entry once as a stable prefix.'))
+        glossary_mode = getattr(pcfg.module, 'llm_glossary_mode', LLMGlossaryMode.Matching)
+        self.llm_glossary_mode_combobox.setCurrentIndex(
+            self._llm_glossary_modes.index(glossary_mode) if glossary_mode in self._llm_glossary_modes else 0)
+        self.llm_glossary_mode_combobox.currentIndexChanged.connect(self._on_llm_glossary_mode_changed)
+        glossary_hl.addWidget(self.llm_glossary_mode_combobox)
+        self.vlayout.addLayout(glossary_hl)
+
+    def _on_llm_context_mode_changed(self, index: int):
+        if 0 <= index < len(self._llm_context_modes):
+            pcfg.module.llm_translate_context = self._llm_context_modes[index]
+
+    def _on_llm_context_budget_changed(self, value: int):
+        pcfg.module.llm_prior_context_token_budget = int(value)
+
+    def _on_llm_glossary_path_changed(self, text: str):
+        pcfg.module.llm_glossary_path = (text or '').strip()
+
+    def _on_llm_glossary_mode_changed(self, index: int):
+        if 0 <= index < len(self._llm_glossary_modes):
+            pcfg.module.llm_glossary_mode = self._llm_glossary_modes[index]
 
     def finishSetTranslator(self, translator: BaseTranslator):
         self.source_combobox.blockSignals(True)

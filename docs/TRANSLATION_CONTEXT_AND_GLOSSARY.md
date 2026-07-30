@@ -100,6 +100,14 @@ This document describes the design and implementation of **cross-page translatio
 
 Project-level glossary is stored in the project JSON and merged at run time; it can be edited in a future UI (e.g. project settings or a “Translation glossary” tab).
 
+### 4.1 Cache-friendly page history (Config → Translator → LLM context)
+
+The settings above render context **inside the prompt text**. A second, complementary mode sends
+previously translated pages as **real conversation turns** with a token-budgeted rolling window,
+provider prompt-cache reuse, and context-length recovery. It is documented separately in
+[`doc/LLM_TRANSLATION_CONTEXT.md`](../doc/LLM_TRANSLATION_CONTEXT.md); when it is enabled, the
+in-prompt page context above is suppressed so context is not sent twice.
+
 ---
 
 ## 5. References

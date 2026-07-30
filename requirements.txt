@@ -44,6 +44,9 @@ ultralytics>=8.4.14
 beautifulsoup4
 colorama
 openai>=2.8.1  # LLM API translator + Video translator flow fixer (local/OpenRouter/OpenAI)
+# Optional: accurate token counts for the LLM prior-context budget (see doc/LLM_TRANSLATION_CONTEXT.md).
+# Without it a deterministic estimate is used.
+tiktoken>=0.7.0
 pydantic
 pyyaml
 natsort

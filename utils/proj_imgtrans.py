@@ -113,8 +113,21 @@ class ProjImgTrans:
         self.sfx_dictionary: List[Dict[str, str]] = []  # [{source,target,style}]
         self.series_context_path: str = ""  # Folder or ID for cross-chapter consistency (e.g. urban_immortal_cultivator)
         self.run_profiles: Dict[str, Dict] = {}  # project-local snapshots of selected run/module settings
+        # Opaque marker of the currently loaded contents; a reload gets a new one even
+        # at the same path, so caches keyed on it (e.g. the LLM history window) reset.
+        self._load_identity = object()
         if directory is not None:
             self.load(directory)
+
+    @property
+    def load_identity(self):
+        """Identity of the currently loaded project contents.
+
+        >>> project = ProjImgTrans()
+        >>> project.load_identity is project.load_identity
+        True
+        """
+        return self._load_identity
 
     def idx2pagename(self, idx: int) -> str:
         return self._idx2pagename[idx]
@@ -225,6 +238,9 @@ class ProjImgTrans:
             if len(self.pages) > 0:
                 self.set_current_img_byidx(0)
 
+        # New contents: anything cached against the previous load must be dropped.
+        self._load_identity = object()
+
     def _ensure_image_info_entry(self, pagename: str):
         if pagename not in self._image_info:
             LOGGER.warning(f"Missing page progress entry for {pagename}; creating default progress state.")
@@ -236,7 +252,29 @@ class ProjImgTrans:
         return (fin_code & pcfg.module.finish_code) == pcfg.module.finish_code
 
     def set_page_progress(self, pagename, code):
-        self._ensure_image_info_entry(pagename)['finish_code'] = code 
+        info = self._ensure_image_info_entry(pagename)
+        info['finish_code'] = code
+        if not (code & RunStatus.FIN_TRANSLATE):
+            info.pop('translation_target', None)
+
+    def mark_translation_finished(self, pagename, target_language: str):
+        """Record that this page is fully translated into `target_language`.
+
+        The target language is what makes a page reusable as LLM history: a page
+        translated into another language must not seed later requests.
+        """
+        self.update_page_progress(pagename, RunStatus.FIN_TRANSLATE)
+        self._ensure_image_info_entry(pagename)['translation_target'] = target_language
+
+    def clear_page_progress(self, pagename, code):
+        info = self._ensure_image_info_entry(pagename)
+        info['finish_code'] &= ~code
+        if code & RunStatus.FIN_TRANSLATE:
+            info.pop('translation_target', None)
+
+    def invalidate_translation(self, pagename):
+        """Drop the translated marker, e.g. before detection replaces page blocks."""
+        self.clear_page_progress(pagename, RunStatus.FIN_TRANSLATE)
 
     def get_page_completion_state(self, pagename: str) -> str:
         state = str(self._ensure_image_info_entry(pagename).get('completion_state', 'todo') or 'todo')

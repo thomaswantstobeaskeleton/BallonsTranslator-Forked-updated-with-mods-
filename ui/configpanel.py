@@ -1894,6 +1894,33 @@ class ConfigPanel(Widget):
     def on_ocr_spell_check_changed(self):
         pcfg.ocr_spell_check = self.ocr_spell_check_checker.isChecked()
 
+    def _sync_llm_context_widgets(self):
+        """Refresh the LLM context/glossary widgets from config (e.g. after a reload)."""
+        panel = getattr(self, 'trans_config_panel', None)
+        if panel is None or not hasattr(panel, 'llm_context_combobox'):
+            return
+        from utils.config import LLMGlossaryMode, LLMTranslateContext
+
+        mode = getattr(pcfg.module, 'llm_translate_context', LLMTranslateContext.PAGE)
+        panel.llm_context_combobox.blockSignals(True)
+        panel.llm_context_combobox.setCurrentIndex(
+            panel._llm_context_modes.index(mode) if mode in panel._llm_context_modes else 0)
+        panel.llm_context_combobox.blockSignals(False)
+
+        panel.llm_context_budget_spin.blockSignals(True)
+        panel.llm_context_budget_spin.setValue(int(getattr(pcfg.module, 'llm_prior_context_token_budget', 4096) or 4096))
+        panel.llm_context_budget_spin.blockSignals(False)
+
+        panel.llm_glossary_edit.blockSignals(True)
+        panel.llm_glossary_edit.setText(str(getattr(pcfg.module, 'llm_glossary_path', '') or ''))
+        panel.llm_glossary_edit.blockSignals(False)
+
+        glossary_mode = getattr(pcfg.module, 'llm_glossary_mode', LLMGlossaryMode.Matching)
+        panel.llm_glossary_mode_combobox.blockSignals(True)
+        panel.llm_glossary_mode_combobox.setCurrentIndex(
+            panel._llm_glossary_modes.index(glossary_mode) if glossary_mode in panel._llm_glossary_modes else 0)
+        panel.llm_glossary_mode_combobox.blockSignals(False)
+
     def on_spell_check_highlight_changed(self):
         pcfg.spell_check_highlight = self.spell_check_highlight_checker.isChecked()
         self.spell_check_highlight_changed.emit(pcfg.spell_check_highlight)
@@ -2541,6 +2568,7 @@ class ConfigPanel(Widget):
             self.inpaint_config_panel.full_image_checker.setChecked(getattr(pcfg.module, 'inpaint_full_image', False))
         if hasattr(self.inpaint_config_panel, 'filter_mask_by_bboxes_checker'):
             self.inpaint_config_panel.filter_mask_by_bboxes_checker.setChecked(getattr(pcfg.module, 'filter_mask_by_bboxes', False))
+        self._sync_llm_context_widgets()
         self.let_effect_combox.setCurrentIndex(pcfg.let_fnteffect_flag)
         self.let_fntsize_combox.setCurrentIndex(pcfg.let_fntsize_flag)
         self.let_fntstroke_combox.setCurrentIndex(pcfg.let_fntstroke_flag)
