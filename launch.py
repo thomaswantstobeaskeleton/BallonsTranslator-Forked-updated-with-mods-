@@ -166,6 +166,55 @@ def ensure_qm_for_display_language(lang: str, translate_dir: str, logger=None) -
     return osp.exists(qm_path)
 
 
+def install_qt_base_translators(app, lang: str, logger=None) -> list:
+    """
+    Install Qt's own translations (qtbase/qt) for `lang` so standard widgets --
+    QMessageBox buttons such as "Show details...", QDialogButtonBox, QColorDialog, ... --
+    are localized instead of staying English (issue #150).
+
+    Returns the list of installed QTranslator objects; the caller must keep a reference
+    to them, otherwise Qt drops the translations when they are garbage collected.
+    """
+    installed = []
+    if not lang or lang in ('en_US', 'English'):
+        return installed
+
+    from qtpy.QtCore import QTranslator, QLibraryInfo
+
+    try:
+        if hasattr(QLibraryInfo, 'path'):
+            translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+        else:   # Qt5
+            translations_path = QLibraryInfo.location(QLibraryInfo.LibraryLocation.TranslationsPath)
+    except Exception as exc:
+        if logger is not None:
+            logger.debug('Could not resolve Qt translations path: %s', exc)
+        return installed
+
+    if not translations_path or not osp.isdir(translations_path):
+        return installed
+
+    # e.g. zh_CN -> ('zh_CN', 'zh'); Qt ships some catalogs per language only.
+    candidates = [lang]
+    if '_' in lang:
+        candidates.append(lang.split('_', 1)[0])
+
+    for catalog in ('qtbase', 'qt'):
+        for code in candidates:
+            if not osp.isfile(osp.join(translations_path, f'{catalog}_{code}.qm')):
+                continue
+            translator = QTranslator()
+            if translator.load(f'{catalog}_{code}', translations_path) and app.installTranslator(translator):
+                installed.append(translator)
+                if logger is not None:
+                    logger.info(f'Loaded Qt standard translations: {catalog}_{code}.qm')
+                break
+
+    if not installed and logger is not None:
+        logger.debug(f'No Qt standard translation catalog found for {lang} in {translations_path}.')
+    return installed
+
+
 def run(command, desc=None, errdesc=None, custom_env=None, live=False):
     if desc is not None:
         print(desc)
@@ -457,10 +506,13 @@ def main():
                 lang = code
                 langp = osp.join(shared.TRANSLATE_DIR, lang + '.qm')
                 break
+    # Keep references on the app object: Qt drops translations that get garbage collected.
+    app._bt_translators = install_qt_base_translators(app, lang, LOGGER)
     if osp.exists(langp):
         translator = QTranslator()
         translator.load(lang, osp.dirname(osp.abspath(__file__)) + "/translate")
         app.installTranslator(translator)
+        app._bt_translators.append(translator)
     elif lang not in ('en_US', 'English'):
         LOGGER.warning(f'target display language file {langp} doesnt exist.')
     LOGGER.info(f'set display language to {lang}')
