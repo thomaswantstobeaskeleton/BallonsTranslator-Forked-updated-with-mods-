@@ -72,3 +72,41 @@ def test_apply_ocr_letter_case(mode, text, expected, monkeypatch):
     blk = types.SimpleNamespace(text=[text])
     apply_ocr_letter_case(blk)
     assert blk.text == [expected]
+
+
+def _load_adapt_unsupported_params():
+    """Load LLMApiTranslator._adapt_unsupported_params without importing the heavy module."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path('modules/translators/trans_llm_api.py').read_text(encoding='utf-8'))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == '_adapt_unsupported_params'
+    )
+    module = ast.Module(body=[fn], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {}
+    exec(compile(module, 'trans_llm_api.py', 'exec'), namespace)
+    fn_obj = namespace['_adapt_unsupported_params']
+    return getattr(fn_obj, '__func__', fn_obj)
+
+
+def test_newer_openai_models_get_supported_parameters():
+    """GPT-5 style models reject max_tokens/temperature (upstream #1251)."""
+    adapt = _load_adapt_unsupported_params()
+    args = {'model': 'gpt-5.5', 'messages': [], 'temperature': 0.2, 'top_p': 0.9, 'max_tokens': 2048}
+
+    adapted, changed = adapt(args, Exception(
+        "Error code: 400 - Unsupported parameter: 'max_tokens' is not supported with this model. "
+        "Use 'max_completion_tokens' instead."))
+    assert 'max_tokens' not in adapted and adapted['max_completion_tokens'] == 2048
+    assert 'max_completion_tokens' in changed
+
+    adapted, _ = adapt(adapted, Exception(
+        "Unsupported value: 'temperature' does not support 0.2 with this model. "
+        "Only the default (1) value is supported."))
+    assert 'temperature' not in adapted
+
+    # Unrelated failures must propagate untouched.
+    assert adapt(args, Exception('rate limit exceeded')) is None

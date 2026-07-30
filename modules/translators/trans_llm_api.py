@@ -1057,6 +1057,52 @@ class LLM_API_Translator(BaseTranslator):
         except Exception:
             pass
 
+    @staticmethod
+    def _adapt_unsupported_params(api_args: dict, err: Exception):
+        """
+        Rewrite request arguments a model rejects, or return None when the error is
+        about something else.
+
+        Newer OpenAI-style models (GPT-5 and later) only accept
+        ``max_completion_tokens`` and refuse a non-default ``temperature``/``top_p``,
+        which otherwise makes them unusable
+        (upstream dmMaze/BallonsTranslator#1251).
+        """
+        msg = str(err).lower()
+        if not any(
+            marker in msg
+            for marker in ("unsupported parameter", "unsupported value", "is not supported with this model",
+                           "does not support", "only the default")
+        ):
+            return None
+
+        adapted = dict(api_args or {})
+        changed = []
+        if "max_tokens" in msg and "max_tokens" in adapted and "max_completion_tokens" not in adapted:
+            adapted["max_completion_tokens"] = adapted.pop("max_tokens")
+            changed.append("max_tokens -> max_completion_tokens")
+        for key in ("temperature", "top_p"):
+            if key in msg and key in adapted:
+                adapted.pop(key, None)
+                changed.append(f"dropped {key}")
+        if not changed:
+            return None
+        return adapted, ", ".join(changed)
+
+    def _create_completion_adapting_params(self, api_args: dict, max_attempts: int = 3):
+        """chat.completions.create, retrying with parameters the model actually accepts."""
+        attempt = 0
+        while True:
+            try:
+                return self.client.chat.completions.create(**api_args), api_args
+            except Exception as e:
+                attempt += 1
+                adapted = self._adapt_unsupported_params(api_args, e) if attempt < max_attempts else None
+                if adapted is None:
+                    raise
+                api_args, changed = adapted
+                self.logger.warning("Model rejected request parameters (%s); retrying with %s.", e, changed)
+
     def _is_reasoning_param_error(self, err: Exception) -> bool:
         s = str(err).lower()
         return (
@@ -2519,7 +2565,7 @@ class LLM_API_Translator(BaseTranslator):
         if response_format is not None:
             api_args["response_format"] = response_format
         try:
-            completion = self.client.chat.completions.create(**api_args)
+            completion, api_args = self._create_completion_adapting_params(api_args)
         except Exception as e:
             # LM Studio / some endpoints reject json_object mode; retry once without it.
             if response_format is not None and "response_format" in api_args:
@@ -2529,7 +2575,7 @@ class LLM_API_Translator(BaseTranslator):
                 )
                 api_args.pop("response_format", None)
                 try:
-                    completion = self.client.chat.completions.create(**api_args)
+                    completion, api_args = self._create_completion_adapting_params(api_args)
                 except Exception as e2:
                     self.logger.warning(f"Context summary request failed: {e2}")
                     return None
@@ -2540,7 +2586,7 @@ class LLM_API_Translator(BaseTranslator):
                 )
                 api_args = self._strip_reasoning_args(api_args)
                 try:
-                    completion = self.client.chat.completions.create(**api_args)
+                    completion, api_args = self._create_completion_adapting_params(api_args)
                 except Exception as e2:
                     self.logger.warning(f"Context summary request failed: {e2}")
                     return None
@@ -2851,7 +2897,7 @@ class LLM_API_Translator(BaseTranslator):
             api_args["response_format"] = {"type": "json_object"}
 
         try:
-            completion = self.client.chat.completions.create(**api_args)
+            completion, api_args = self._create_completion_adapting_params(api_args)
         except Exception as e:
             err_str = str(e).lower()
             # Text-only model (e.g. Llama 3.3 70B): OpenRouter returns 404 "No endpoints found that support image input". Retry without page image.
@@ -2877,7 +2923,7 @@ class LLM_API_Translator(BaseTranslator):
                         {"role": "user", "content": text_only},
                     ]
                     try:
-                        completion = self.client.chat.completions.create(**api_args)
+                        completion, api_args = self._create_completion_adapting_params(api_args)
                     except Exception as e2:
                         self.logger.error(f"API request failed: {e2}")
                         raise
@@ -2896,7 +2942,7 @@ class LLM_API_Translator(BaseTranslator):
                 )
                 api_args = {k: v for k, v in api_args.items() if k != "response_format"}
                 try:
-                    completion = self.client.chat.completions.create(**api_args)
+                    completion, api_args = self._create_completion_adapting_params(api_args)
                 except Exception as e2:
                     self.logger.error(f"API request failed: {e2}")
                     raise
@@ -2906,7 +2952,7 @@ class LLM_API_Translator(BaseTranslator):
                 )
                 api_args = self._strip_reasoning_args(api_args)
                 try:
-                    completion = self.client.chat.completions.create(**api_args)
+                    completion, api_args = self._create_completion_adapting_params(api_args)
                 except Exception as e2:
                     self.logger.error(f"API request failed: {e2}")
                     raise

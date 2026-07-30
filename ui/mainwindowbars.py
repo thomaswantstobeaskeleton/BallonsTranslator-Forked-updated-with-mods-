@@ -169,6 +169,10 @@ class LeftBar(Widget):
         actionExportTranslationTxt = QAction(self.tr("Export translation as TXT"), self)
         self.export_trans_txt = actionExportTranslationTxt.triggered
 
+        actionExportBothTxt = QAction(self.tr("Export source + translation as TXT"), self)
+        actionExportBothTxt.setToolTip(self.tr("One file with each block's source text followed by its translation."))
+        self.export_both_txt = actionExportBothTxt.triggered
+
         actionExportSrcMD = QAction(self.tr("Export source text as markdown"), self)
         self.export_src_md = actionExportSrcMD.triggered
         actionExportTranslationMD = QAction(self.tr("Export translation as markdown"), self)
@@ -1633,9 +1637,11 @@ class TitleBar(Widget):
         actionExportSrcMD.triggered.connect(leftBar.export_src_md.emit)
         actionExportTransMD = QAction(self.tr("Export translation as markdown"), self)
         actionExportTransMD.triggered.connect(leftBar.export_trans_md.emit)
+        actionExportBothTxt = QAction(self.tr("Export source + translation as TXT"), self)
+        actionExportBothTxt.triggered.connect(leftBar.export_both_txt.emit)
         exportMenu.addActions([actionExportDoc, actionExportCurrentPage])
         exportMenu.addSeparator()
-        exportMenu.addActions([actionExportSrcTxt, actionExportTransTxt, actionExportSrcMD, actionExportTransMD])
+        exportMenu.addActions([actionExportSrcTxt, actionExportTransTxt, actionExportBothTxt, actionExportSrcMD, actionExportTransMD])
         fileMenu.addMenu(exportMenu)
         importMenu = QMenu(self.tr("Import"), self)
         actionImportDoc = QAction(self.tr("Import from Doc"), self)

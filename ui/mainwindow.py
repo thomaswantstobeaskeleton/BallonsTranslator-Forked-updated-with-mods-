@@ -530,6 +530,7 @@ class MainWindow(mainwindow_cls):
         self.leftBar.import_doc.connect(self.on_import_doc)
         self.leftBar.export_src_txt.connect(lambda : self.on_export_txt(dump_target='source'))
         self.leftBar.export_trans_txt.connect(lambda : self.on_export_txt(dump_target='translation'))
+        self.leftBar.export_both_txt.connect(lambda : self.on_export_txt(dump_target='both'))
         self.leftBar.export_src_md.connect(lambda : self.on_export_txt(dump_target='source', suffix='.md'))
         self.leftBar.export_trans_md.connect(lambda : self.on_export_txt(dump_target='translation', suffix='.md'))
         self.leftBar.import_trans_txt.connect(self.on_import_trans_txt)
@@ -7715,6 +7716,10 @@ class MainWindow(mainwindow_cls):
 
     def on_export_txt(self, dump_target, suffix='.txt'):
         try:
+            # Flush the edits of the page being viewed, otherwise its latest text is missing
+            # from the export (upstream dmMaze/BallonsTranslator#1229).
+            if self.imgtrans_proj.current_img and self.st_manager.textblk_item_list:
+                self.st_manager.updateTextBlkList()
             self.imgtrans_proj.dump_txt(dump_target=dump_target, suffix=suffix)
             create_info_dialog(self.tr('Text file exported to ') + self.imgtrans_proj.dump_txt_path(dump_target, suffix))
         except Exception as e:

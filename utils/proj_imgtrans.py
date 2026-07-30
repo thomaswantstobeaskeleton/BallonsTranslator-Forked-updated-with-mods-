@@ -673,11 +673,17 @@ class ProjImgTrans:
     def dump_txt(self, dump_target: str, suffix='.txt'):
         save_path = self.dump_txt_path(dump_target, suffix=suffix)
         text_all = []
-        assert dump_target in {'source', 'translation'}
+        assert dump_target in {'source', 'translation', 'both'}
         assert suffix in {'.txt', '.md'}
         for page_name, blk_list in self.pages.items():
             text_in_page = ['### ' + page_name]
             for ii, blk in enumerate(blk_list):
+                if dump_target == 'both':
+                    # source line followed by its translation, so both can be proofread side by side
+                    source = blk.get_text().strip()
+                    translation = (blk.translation or '').strip()
+                    text_in_page.append(f'{ii + 1}. {source}\n{ii + 1}. {translation}')
+                    continue
                 if dump_target == 'translation':
                     text = blk.translation.strip()
                 elif dump_target == 'source':

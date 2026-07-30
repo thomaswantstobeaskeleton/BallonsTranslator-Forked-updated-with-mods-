@@ -379,6 +379,38 @@ class GPTTranslator(BaseTranslator):
             self.token_count_last = response.usage['total_tokens']
         return response.choices[0].text
     
+    def _create_completion_adapting_params(self, create, func_args: dict, max_attempts: int = 3):
+        """
+        Call `create`, retrying with the parameters the model accepts.
+
+        Newer OpenAI models (GPT-5 and later) reject ``max_tokens`` and any
+        non-default ``temperature``/``top_p``/penalties, which otherwise makes them
+        unusable (upstream dmMaze/BallonsTranslator#1251).
+        """
+        args = dict(func_args)
+        for attempt in range(max_attempts):
+            try:
+                return create(**args)
+            except Exception as e:
+                msg = str(e).lower()
+                if not any(marker in msg for marker in (
+                    'unsupported parameter', 'unsupported value', 'is not supported with this model',
+                    'does not support', 'only the default',
+                )):
+                    raise
+                changed = []
+                if 'max_tokens' in msg and 'max_tokens' in args and 'max_completion_tokens' not in args:
+                    args['max_completion_tokens'] = args.pop('max_tokens')
+                    changed.append('max_tokens -> max_completion_tokens')
+                for key in ('temperature', 'top_p', 'presence_penalty', 'frequency_penalty'):
+                    if key in msg and key in args:
+                        args.pop(key, None)
+                        changed.append(f'dropped {key}')
+                if not changed or attempt == max_attempts - 1:
+                    raise
+                self.logger.warning('Model rejected request parameters (%s); retrying with %s.', e, ', '.join(changed))
+        raise RuntimeError('unreachable')
+
     def _request_translation_with_chat_sample(self, prompt: str, model: str, chat_sample: List) -> str:
         messages = [
             {'role': 'system', 'content': self.chat_system_template},
@@ -410,7 +442,7 @@ class GPTTranslator(BaseTranslator):
         else:
             openai_chatcompletions_create = openai.ChatCompletion.create
 
-        response = openai_chatcompletions_create(**func_args)
+        response = self._create_completion_adapting_params(openai_chatcompletions_create, func_args)
 
         if OPENAPI_V1_API:
             if response.usage is not None:
