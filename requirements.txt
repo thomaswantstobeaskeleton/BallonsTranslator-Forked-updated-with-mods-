@@ -28,7 +28,10 @@ bs4
 deepl>=1.16.0
 qtpy
 spacy-pkuseg
-sentencepiece
+# sentencepiece 0.2.2 crashes on import on Windows ("Windows fatal exception: access
+# violation", reported on CPython 3.11), killing the app before the UI opens (issue #155).
+sentencepiece==0.2.1 ; sys_platform == 'win32'
+sentencepiece ; sys_platform != 'win32'
 ctranslate2
 python-docx
 docx2txt
