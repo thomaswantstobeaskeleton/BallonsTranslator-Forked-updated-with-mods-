@@ -1,8 +1,8 @@
 from typing import List, Union
 
 from qtpy.QtWidgets import QStackedWidget, QSizePolicy, QTextEdit, QScrollArea, QGraphicsDropShadowEffect, QVBoxLayout, QApplication, QHBoxLayout, QSizePolicy, QLabel, QLineEdit
-from qtpy.QtCore import Signal, Qt, QMimeData, QEvent, QPoint, QSize
-from qtpy.QtGui import QIntValidator, QColor, QFocusEvent, QInputMethodEvent, QDragEnterEvent, QDropEvent, QKeyEvent, QTextCursor, QMouseEvent, QDrag, QPixmap, QKeySequence
+from qtpy.QtCore import Signal, Qt, QMimeData, QEvent, QPoint, QSize, QTimer
+from qtpy.QtGui import QIntValidator, QColor, QFocusEvent, QInputMethodEvent, QDragEnterEvent, QDropEvent, QKeyEvent, QTextCursor, QMouseEvent, QDrag, QPixmap, QKeySequence, QTextCharFormat
 import importlib
 import importlib.util
 import webbrowser
@@ -13,6 +13,14 @@ from .textitem import TextBlock
 from utils.config import pcfg
 from utils.logger import logger as LOGGER
 
+
+SPELLCHECK_UNDERLINE_COLOR = QColor(232, 74, 74)
+
+
+def _spellcheck_underline_style():
+    """Wavy 'spell check' underline; enum location differs between Qt5 and Qt6."""
+    styles = getattr(QTextCharFormat, 'UnderlineStyle', QTextCharFormat)
+    return getattr(styles, 'SpellCheckUnderline', getattr(styles, 'WaveUnderline'))
 
 STYLE_TRANSPAIR_CHECKED = "background-color: rgba(30, 147, 229, 20%);"
 STYLE_TRANSPAIR_BOTTOM = "border-width: 5px; border-bottom-style: solid; border-color: rgb(30, 147, 229);"
@@ -130,6 +138,91 @@ class SourceTextEdit(QTextEdit):
         self.min_height = 45
         self.setFold(fold)
 
+        # Inline spell check (issue #12): misspelled words get a red wavy underline
+        # and suggestions in the right-click menu.
+        self._spellcheck_issues = []
+        self._spellcheck_timer = QTimer(self)
+        self._spellcheck_timer.setSingleShot(True)
+        self._spellcheck_timer.setInterval(400)
+        self._spellcheck_timer.timeout.connect(self.update_spellcheck_marks)
+
+    @property
+    def spellcheck_lang(self) -> str:
+        """Language the content of this editor is written in."""
+        return getattr(pcfg.module, 'translate_source', '') or ''
+
+    def schedule_spellcheck(self):
+        if getattr(pcfg, 'spell_check_highlight', True):
+            self._spellcheck_timer.start()
+        elif self._spellcheck_issues:
+            self.update_spellcheck_marks()
+
+    def update_spellcheck_marks(self):
+        """Underline misspelled words without touching the document's own formatting."""
+        issues = []
+        if getattr(pcfg, 'spell_check_highlight', True):
+            try:
+                from utils.ocr_spellcheck import get_spell_issues
+                issues = get_spell_issues(self.toPlainText(), self.spellcheck_lang)
+            except Exception as e:
+                LOGGER.debug('Inline spell check failed: %s', e)
+                issues = []
+        if not issues and not self._spellcheck_issues:
+            return
+        self._spellcheck_issues = issues
+
+        selections = []
+        fmt = QTextCharFormat()
+        fmt.setUnderlineStyle(_spellcheck_underline_style())
+        fmt.setUnderlineColor(SPELLCHECK_UNDERLINE_COLOR)
+        for _word, start, end, _suggs in issues:
+            selection = QTextEdit.ExtraSelection()
+            cursor = QTextCursor(self.document())
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            selection.cursor = cursor
+            selection.format = fmt
+            selections.append(selection)
+        self.setExtraSelections(selections)
+
+    def spellcheck_issue_at(self, position: int):
+        """Return the misspelling (word, start, end, suggestions) at a document position."""
+        for issue in self._spellcheck_issues:
+            if issue[1] <= position <= issue[2]:
+                return issue
+        return None
+
+    def replace_range(self, start: int, end: int, text: str):
+        """Replace a range as if the user typed it, so the edit propagates to the text block."""
+        self.setFocus()
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(text)
+        self.setTextCursor(cursor)
+        if not self.hasFocus():
+            # on_content_changed only propagates edits of the focused editor
+            self.change_from = start
+            self.change_added = len(text)
+            self.handle_content_change()
+
+    def _add_spellcheck_actions(self, menu, position: int) -> bool:
+        issue = self.spellcheck_issue_at(position)
+        if issue is None:
+            return False
+        word, start, end, suggs = issue
+        menu.addSeparator()
+        if not suggs:
+            action = menu.addAction(self.tr('No spelling suggestions for "{}"').format(word))
+            action.setEnabled(False)
+            return True
+        header = menu.addAction(self.tr('Spelling suggestions for "{}"').format(word))
+        header.setEnabled(False)
+        for sugg in suggs[:8]:
+            action = menu.addAction(sugg)
+            action.setData(('spellcheck', start, end, sugg))
+        return True
+
     def setFold(self, fold: bool):
         if fold:
             self.min_height = 35
@@ -147,8 +240,18 @@ class SourceTextEdit(QTextEdit):
         menu = self.createStandardContextMenu()
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         acts = menu.actions()
+        # Spell check suggestions are appended after the standard actions so the
+        # index based checks below keep working.
+        self._add_spellcheck_actions(menu, self.cursorForPosition(event.pos()).position())
         self.in_acts = True
         rst = menu.exec_(event.globalPos())
+
+        data = rst.data() if rst is not None else None
+        if isinstance(data, tuple) and data and data[0] == 'spellcheck':
+            _tag, start, end, replacement = data
+            self.in_acts = False
+            self.replace_range(start, end, replacement)
+            return
 
         # future actions orders changes could break these comparsion
         self.paste_flag = rst == acts[5]
@@ -198,6 +301,7 @@ class SourceTextEdit(QTextEdit):
         self.setFixedHeight(max(h, self.min_height))
 
     def on_content_changed(self):
+        self.schedule_spellcheck()
         if self.text_content_changed:
             self.text_content_changed = False
             if not self.highlighting:
@@ -335,7 +439,10 @@ class SourceTextEdit(QTextEdit):
 
         
 class TransTextEdit(SourceTextEdit):
-    pass
+
+    @property
+    def spellcheck_lang(self) -> str:
+        return getattr(pcfg.module, 'translate_target', '') or ''
 
 
 class RowIndexEditor(QLineEdit):

@@ -929,6 +929,7 @@ class MainWindow(mainwindow_cls):
         self.configPanel.custom_cursor_changed.connect(self._on_config_custom_cursor_changed)
         self.configPanel.display_lang_changed.connect(self.on_display_lang_changed)
         self.configPanel.dev_mode_changed.connect(self.on_dev_mode_changed)
+        self.configPanel.spell_check_highlight_changed.connect(self.on_spell_check_highlight_changed)
         self.configPanel.manual_mode_changed.connect(self._update_run_button_tooltip)
         if pcfg.let_show_only_custom_fonts_flag:
             self.on_show_only_custom_font(True)
@@ -7391,6 +7392,24 @@ class MainWindow(mainwindow_cls):
             pcfg.display_lang = lang
             self.set_display_lang(lang)
 
+    def on_spell_check_highlight_changed(self, enabled: bool):
+        """Re-run (or clear) inline spell check marks in the open text panel (issue #12)."""
+        if enabled:
+            from utils.ocr_spellcheck import reset_spell_check_cache, spell_check_status
+            reset_spell_check_cache()
+            status = spell_check_status(getattr(pcfg.module, 'translate_target', '') or '')
+            if status:
+                LOGGER.info('Inline spell check unavailable: %s', status)
+                self.create_infodialog.emit({'info_msg': {
+                    'title': self.tr('Spell check'),
+                    'text': self.tr('Misspelled words cannot be underlined: ') + status + '\n'
+                            + self.tr('Install pyenchant and a dictionary for the selected language '
+                                      '(e.g. pip install pyenchant).'),
+                }})
+        for pw in self.st_manager.pairwidget_list:
+            pw.e_source.update_spellcheck_marks()
+            pw.e_trans.update_spellcheck_marks()
+
     def on_dev_mode_changed(self):
         """Refresh detector/OCR/translator dropdowns after dev_mode toggle."""
         # Update realtime translator menu item visibility
@@ -8472,18 +8491,26 @@ class MainWindow(mainwindow_cls):
             return
         self.st_manager.set_blkitems_selection(True)
 
+    def _warn_spell_check_unavailable(self, lang: str) -> bool:
+        """Show why spell check can't run for `lang`. Returns True when it is unavailable."""
+        try:
+            from utils.ocr_spellcheck import spell_check_available, spell_check_status
+            if spell_check_available(lang):
+                return False
+            reason = spell_check_status(lang)
+        except Exception as e:
+            reason = str(e)
+        QMessageBox.warning(
+            self,
+            self.tr("Spell check"),
+            self.tr("Spell check is unavailable: ") + reason + "\n"
+            + self.tr("It requires pyenchant and a system dictionary for the checked language (e.g. en_US)."),
+        )
+        return True
+
     def on_spell_check_src(self):
         """Open spell check panel and run check on source text so misspelled words are listed."""
-        try:
-            from utils.ocr_spellcheck import _init_enchant
-            if not _init_enchant():
-                raise RuntimeError("enchant not available")
-        except Exception:
-            QMessageBox.warning(
-                self,
-                self.tr("Spell check"),
-                self.tr("Spell check requires pyenchant. Install it and a system dictionary (e.g. en_US)."),
-            )
+        if self._warn_spell_check_unavailable(getattr(pcfg.module, 'translate_source', '') or ''):
             return
         if self.centralStackWidget.currentIndex() != 1:
             return
@@ -8495,16 +8522,7 @@ class MainWindow(mainwindow_cls):
 
     def on_spell_check_trans(self):
         """Open spell check panel and run check on translation so misspelled words are listed."""
-        try:
-            from utils.ocr_spellcheck import _init_enchant
-            if not _init_enchant():
-                raise RuntimeError("enchant not available")
-        except Exception:
-            QMessageBox.warning(
-                self,
-                self.tr("Spell check"),
-                self.tr("Spell check requires pyenchant. Install it and a system dictionary (e.g. en_US)."),
-            )
+        if self._warn_spell_check_unavailable(getattr(pcfg.module, 'translate_target', '') or ''):
             return
         if self.centralStackWidget.currentIndex() != 1:
             return

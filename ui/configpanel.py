@@ -413,6 +413,7 @@ class ConfigPanel(Widget):
     display_lang_changed = Signal(str)
     dev_mode_changed = Signal()
     manual_mode_changed = Signal()
+    spell_check_highlight_changed = Signal(bool)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -1653,6 +1654,12 @@ class ConfigPanel(Widget):
         )
         self.ocr_spell_check_checker.stateChanged.connect(self.on_ocr_spell_check_changed)
 
+        self.spell_check_highlight_checker, _ = generalConfigPanel.addCheckBox(
+            self.tr('Underline misspelled words in the text panel'),
+            discription=self.tr('Mark misspelled words in the source and translation editors with a red wavy underline; right-click a marked word for suggestions. Uses the dictionary of the selected source/target language (requires pyenchant and a system dictionary).')
+        )
+        self.spell_check_highlight_checker.stateChanged.connect(self.on_spell_check_highlight_changed)
+
         generalConfigPanel.addTextLabel(label_save)
         self.rst_imgformat_combobox, imsave_sublock = generalConfigPanel.addCombobox(['PNG', 'JPG', 'WEBP', 'JXL'], self.tr('Result image format'))
         self.rst_imgformat_combobox.activated.connect(self.on_rst_imgformat_changed)
@@ -1886,6 +1893,10 @@ class ConfigPanel(Widget):
 
     def on_ocr_spell_check_changed(self):
         pcfg.ocr_spell_check = self.ocr_spell_check_checker.isChecked()
+
+    def on_spell_check_highlight_changed(self):
+        pcfg.spell_check_highlight = self.spell_check_highlight_checker.isChecked()
+        self.spell_check_highlight_changed.emit(pcfg.spell_check_highlight)
 
     def on_default_device_index_changed(self, index: int):
         if index == 0:
@@ -2818,6 +2829,7 @@ class ConfigPanel(Widget):
         self.display_lang_combobox.blockSignals(False)
         self.config_font_scale_spin.setValue(getattr(pcfg, 'config_panel_font_scale', 1.0))
         self.ocr_spell_check_checker.setChecked(getattr(pcfg, 'ocr_spell_check', False))
+        self.spell_check_highlight_checker.setChecked(getattr(pcfg, 'spell_check_highlight', True))
         dd = getattr(pcfg, 'default_device', '') or ''
         if dd == '':
             self.default_device_combobox.setCurrentIndex(0)

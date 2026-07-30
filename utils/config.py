@@ -568,6 +568,8 @@ class ProgramConfig(Config):
     default_device: str = ''
     unload_after_idle_minutes: int = 0
     ocr_spell_check: bool = False
+    # Underline misspelled words in the source / translation editors (issue #12).
+    spell_check_highlight: bool = True
     manga_source_lang: str = 'en'
     manga_source_data_saver: bool = False
     manga_source_download_dir: str = ''
@@ -752,7 +754,7 @@ CONFIG_KEY_ORDER = (
     "supersampling_factor", "show_text_style_preset", "expand_tstyle_panel", "show_text_effect_panel",
     "expand_teffect_panel", "text_advanced_format_panel", "expand_tadvanced_panel", "config_panel_font_scale",
     "show_advanced_settings",
-    "default_device", "unload_after_idle_minutes", "ocr_spell_check",
+    "default_device", "unload_after_idle_minutes", "ocr_spell_check", "spell_check_highlight",
     "manga_source_lang", "manga_source_data_saver", "manga_source_download_dir",
     "manga_source_request_delay", "manga_source_open_after_download", "manga_source_playwright_headless",
     "manga_source_translate_raw_search", "manga_source_show_experimental", "manga_source_base_url_overrides", "manga_source_filter",

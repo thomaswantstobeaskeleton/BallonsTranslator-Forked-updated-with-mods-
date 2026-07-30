@@ -75,13 +75,22 @@ class SpellCheckPanel(QWidget):
         self.target_combo.setCurrentIndex(0 if source_not_translation else 1)
         self._on_check()
 
+    def _spellcheck_lang(self, use_translation: bool) -> str:
+        from utils.config import pcfg
+        key = 'translate_target' if use_translation else 'translate_source'
+        return getattr(pcfg.module, key, '') or ''
+
     def _on_check(self):
-        from utils.ocr_spellcheck import get_spell_issues, _init_enchant
-        if not _init_enchant():
+        from utils.ocr_spellcheck import get_spell_issues, spell_check_available, spell_check_status
+        use_translation = self.target_combo.currentIndex() == 1
+        lang = self._spellcheck_lang(use_translation)
+        if not spell_check_available(lang):
             QMessageBox.information(
                 self,
                 self.tr('Spell check'),
-                self.tr('Spell check requires pyenchant and a dictionary (e.g. en_US). Install: pip install pyenchant'),
+                self.tr('Spell check is unavailable: ') + spell_check_status(lang) + '\n'
+                + self.tr('It requires pyenchant and a dictionary for the checked language. '
+                          'Install: pip install pyenchant'),
             )
             return
         if not self._get_blocks:
@@ -94,13 +103,12 @@ class SpellCheckPanel(QWidget):
                 self.tr('No text blocks on the current page. Open a project, select a page with text blocks, then run detection/OCR if needed.'),
             )
             return
-        use_translation = self.target_combo.currentIndex() == 1
         self._issues = []
         for block_idx, text_lines, trans_lines in blocks:
             lines = trans_lines if use_translation else text_lines
             for line_idx, line in enumerate(lines):
                 text = line if isinstance(line, str) else str(line)
-                for word, start, end, suggs in get_spell_issues(text):
+                for word, start, end, suggs in get_spell_issues(text, lang):
                     self._issues.append((block_idx, line_idx, word, start, end, suggs, text, use_translation))
         self._refresh_list()
 
