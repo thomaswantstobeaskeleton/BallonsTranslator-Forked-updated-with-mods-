@@ -732,13 +732,38 @@ class MainWindow(mainwindow_cls):
         self.imgtrans_progress_msgbox = ImgtransProgressMessageBox()
         self.resetStyleSheet()
 
+    def _persist_module_selection(self, key: str, name: str, is_fallback: bool = False):
+        """
+        Remember the selected module so the next launch restores it (issue #152).
+
+        `is_fallback` marks a module loaded only because the configured one was
+        unavailable (e.g. its model files are still missing); the saved selection is
+        then left untouched so it comes back once the module works again.
+        """
+        if is_fallback or not name:
+            return
+        if getattr(pcfg.module, key, None) == name:
+            return
+        setattr(pcfg.module, key, name)
+        self.schedule_config_save()
+
+    def schedule_config_save(self, delay_ms: int = 1500):
+        """Write config.json shortly after a change so settings survive a crash / forced quit."""
+        timer = getattr(self, '_config_save_timer', None)
+        if timer is None:
+            timer = self._config_save_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.save_config)
+        timer.start(delay_ms)
+
     def on_finish_setdetector(self):
         """Defer UI update to avoid QPainter conflict when signal fires during paint (e.g. model load)."""
         module_manager = self.module_manager
         if module_manager.textdetector is not None:
             name = module_manager.textdetector.name
+            is_fallback = module_manager.textdetect_thread.module_fallback_used
             def _update():
-                pcfg.module.textdetector = name
+                self._persist_module_selection('textdetector', name, is_fallback)
                 self.configPanel.detect_config_panel.setDetector(name)
                 self.bottomBar.textdet_selector.setSelectedValue(name)
                 LOGGER.info('Text detector set to {}'.format(name))
@@ -750,8 +775,9 @@ class MainWindow(mainwindow_cls):
         module_manager = self.module_manager
         if module_manager.ocr is not None:
             name = module_manager.ocr.name
+            is_fallback = module_manager.ocr_thread.module_fallback_used
             def _update():
-                pcfg.module.ocr = name
+                self._persist_module_selection('ocr', name, is_fallback)
                 self.configPanel.ocr_config_panel.setOCR(name)
                 self.bottomBar.ocr_selector.setSelectedValue(name)
                 LOGGER.info('OCR set to {}'.format(name))
@@ -763,8 +789,9 @@ class MainWindow(mainwindow_cls):
         module_manager = self.module_manager
         if module_manager.inpainter is not None:
             name = module_manager.inpainter.name
+            is_fallback = module_manager.inpaint_thread.module_fallback_used
             def _update():
-                pcfg.module.inpainter = name
+                self._persist_module_selection('inpainter', name, is_fallback)
                 self.configPanel.inpaint_config_panel.setInpainter(name)
                 self.bottomBar.inpaint_selector.setSelectedValue(name)
                 LOGGER.info('Inpainter set to {}'.format(name))
@@ -777,8 +804,9 @@ class MainWindow(mainwindow_cls):
         translator = module_manager.translator
         if translator is not None:
             name = translator.name
+            is_fallback = module_manager.translate_thread.module_fallback_used
             def _update():
-                pcfg.module.translator = name
+                self._persist_module_selection('translator', name, is_fallback)
                 self.bottomBar.trans_selector.finishSetTranslator(translator)
                 self.configPanel.trans_config_panel.finishSetTranslator(translator)
                 LOGGER.info('Translator set to {}'.format(name))
@@ -802,6 +830,7 @@ class MainWindow(mainwindow_cls):
             pcfg.module.enable_inpaint = checked
             self.bottomBar.inpaint_selector.setVisible(checked)
         pcfg.module.update_finish_code()
+        self.schedule_config_save()
 
     def setupConfig(self):
 
@@ -6941,6 +6970,7 @@ class MainWindow(mainwindow_cls):
         if translator is not None:
             translator.set_source(key)
         pcfg.module.translate_source = key
+        self.schedule_config_save()
         try:
             idx = translator.supported_src_list.index(key) if translator else 0
         except (ValueError, AttributeError):
@@ -6964,6 +6994,7 @@ class MainWindow(mainwindow_cls):
         if translator is not None:
             translator.set_target(key)
         pcfg.module.translate_target = key
+        self.schedule_config_save()
         try:
             idx = translator.supported_tgt_list.index(key) if translator else 0
         except (ValueError, AttributeError):

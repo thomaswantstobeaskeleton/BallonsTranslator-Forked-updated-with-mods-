@@ -71,9 +71,13 @@ class ModuleThread(QThread):
         self.num_process_pages = 0
         self.imgtrans_proj: ProjImgTrans = None
         self.stop_requested = False
+        # True while the loaded module is a substitute for an unavailable one; the
+        # user's saved selection must not be overwritten in that case (issue #152).
+        self.module_fallback_used = False
 
-    def _set_module(self, module_name: str):
+    def _set_module(self, module_name: str, is_fallback: bool = False):
         old_module = self.module
+        self.module_fallback_used = is_fallback
         register = self.module_register
         valid_keys = None
         if self.module_key == 'textdetector':
@@ -87,24 +91,19 @@ class ModuleThread(QThread):
             if self.module_key == 'textdetector':
                 valid = GET_VALID_TEXTDETECTORS()
                 fallback = "ctd" if "ctd" in valid else (valid[0] if valid else None)
-                if fallback:
-                    cfg_module.textdetector = fallback
             elif self.module_key == 'ocr':
                 valid = GET_VALID_OCR()
                 fallback = valid[0] if valid else None
-                if fallback:
-                    cfg_module.ocr = fallback
             elif self.module_key == 'translator':
                 valid = GET_VALID_TRANSLATORS()
                 fallback = "google" if "google" in valid else (valid[0] if valid else None)
-                if fallback:
-                    cfg_module.translator = fallback
             elif self.module_key == 'inpainter':
                 valid = GET_VALID_INPAINTERS()
                 fallback = valid[0] if valid else None
-                if fallback:
-                    cfg_module.inpainter = fallback
             if fallback:
+                # Keep the configured module in cfg_module: it may become available again
+                # once its model files are downloaded (issue #152).
+                self.module_fallback_used = True
                 LOGGER.warning(
                     "Module '%s' (%s) is not available (e.g. failed to load). Using '%s'.",
                     module_name, self.module_key, fallback,
@@ -172,8 +171,8 @@ class InpaintThread(ModuleThread):
     def inpainter(self) -> InpainterBase:
         return self.module
 
-    def setInpainter(self, inpainter: str):
-        self.job = lambda : self._set_module(inpainter)
+    def setInpainter(self, inpainter: str, is_fallback: bool = False):
+        self.job = lambda : self._set_module(inpainter, is_fallback)
         self.start()
 
     def inpaint(self, img: np.ndarray, mask: np.ndarray, img_key: str = None, inpaint_rect=None):
@@ -206,8 +205,8 @@ class TextDetectThread(ModuleThread):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__('textdetector', TEXTDETECTORS, *args, **kwargs)
 
-    def setTextDetector(self, textdetector: str):
-        self.job = lambda : self._set_module(textdetector)
+    def setTextDetector(self, textdetector: str, is_fallback: bool = False):
+        self.job = lambda : self._set_module(textdetector, is_fallback)
         self.start()
 
     @property
@@ -221,8 +220,8 @@ class OCRThread(ModuleThread):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__('ocr', OCR, *args, **kwargs)
 
-    def setOCR(self, ocr: str):
-        self.job = lambda : self._set_module(ocr)
+    def setOCR(self, ocr: str, is_fallback: bool = False):
+        self.job = lambda : self._set_module(ocr, is_fallback)
         self.start()
     
     @property
@@ -239,24 +238,27 @@ class TranslateThread(ModuleThread):
         super().__init__('translator', TRANSLATORS, *args, **kwargs)
         self.translator: BaseTranslator = self.module
 
-    def _set_translator(self, translator: str):
-        
+    def _set_translator(self, translator: str, is_fallback: bool = False):
+
         old_translator = self.translator
+        self.module_fallback_used = is_fallback
         source, target = cfg_module.translate_source, cfg_module.translate_target
         if self.translator is not None:
             if self.translator.name == translator:
                 return
-        
+
         if translator not in TRANSLATORS.module_dict:
             valid = GET_VALID_TRANSLATORS()
             fallback = 'google' if 'google' in valid else (valid[0] if valid else None)
             if fallback:
+                # Keep cfg_module.translator: the selection stays valid once the
+                # translator becomes available again (issue #152).
+                self.module_fallback_used = True
                 LOGGER.warning(
                     "Translator '%s' is not available (e.g. failed to load). Using '%s'.",
                     translator, fallback,
                 )
                 translator = fallback
-                cfg_module.translator = fallback
             else:
                 create_error_dialog(KeyError(translator), self.tr('Failed to set translator. No fallback available.'))
                 self.finish_set_module.emit()
@@ -270,7 +272,8 @@ class TranslateThread(ModuleThread):
                 self.translator = translator_module(source, target, raise_unsupported_lang=False)
             cfg_module.translate_source = self.translator.lang_source
             cfg_module.translate_target = self.translator.lang_target
-            cfg_module.translator = self.translator.name
+            if not self.module_fallback_used:
+                cfg_module.translator = self.translator.name
         except Exception as e:
             if old_translator is None:
                 valid = GET_VALID_TRANSLATORS()
@@ -286,11 +289,11 @@ class TranslateThread(ModuleThread):
         self.module = self.translator
         self.finish_set_module.emit()
 
-    def setTranslator(self, translator: str):
+    def setTranslator(self, translator: str, is_fallback: bool = False):
         if translator in ['Sugoi']:
-            self._set_translator(translator)
+            self._set_translator(translator, is_fallback)
         else:
-            self.job = lambda : self._set_translator(translator)
+            self.job = lambda : self._set_translator(translator, is_fallback)
             self.start()
 
     def _translate_page(self, page_dict, page_key: str, emit_finished=True):
@@ -2111,6 +2114,7 @@ class ModuleManager(QObject):
     def setTranslator(self, translator: str = None):
         if translator is None:
             translator = cfg_module.translator
+        is_fallback = False
         valid = GET_VALID_TRANSLATORS()
         if translator not in valid:
             if translator in TRANSLATORS.module_dict:
@@ -2127,7 +2131,7 @@ class ModuleManager(QObject):
                     translator, fallback,
                 )
                 translator = fallback
-                cfg_module.translator = fallback
+                is_fallback = True
             else:
                 create_error_dialog(
                     ValueError(self.tr("No translator module available.")),
@@ -2137,7 +2141,7 @@ class ModuleManager(QObject):
         if self.translate_thread.isRunning():
             LOGGER.warning('Terminating a running translation thread.')
             self.translate_thread.terminate()
-        self.translate_thread.setTranslator(translator)
+        self.translate_thread.setTranslator(translator, is_fallback)
 
     def setInpainter(self, inpainter: str = None):
         
@@ -2146,6 +2150,7 @@ class ModuleManager(QObject):
         
         if inpainter is None:
             inpainter = cfg_module.inpainter
+        is_fallback = False
         valid = GET_VALID_INPAINTERS()
         if inpainter not in valid:
             if inpainter in INPAINTERS.module_dict:
@@ -2162,7 +2167,7 @@ class ModuleManager(QObject):
                     inpainter, fallback,
                 )
                 inpainter = fallback
-                cfg_module.inpainter = fallback
+                is_fallback = True
             else:
                 create_error_dialog(
                     ValueError(self.tr("No inpainter module available.")),
@@ -2176,11 +2181,12 @@ class ModuleManager(QObject):
             self.check_inpaint_fin_timer.start(300)
             return
 
-        self.inpaint_thread.setInpainter(inpainter)
+        self.inpaint_thread.setInpainter(inpainter, is_fallback)
 
     def setTextDetector(self, textdetector: str = None):
         if textdetector is None:
             textdetector = cfg_module.textdetector
+        is_fallback = False
         valid = GET_VALID_TEXTDETECTORS()
         if textdetector not in valid:
             if textdetector in TEXTDETECTORS.module_dict:
@@ -2202,11 +2208,11 @@ class ModuleManager(QObject):
                 textdetector, fallback,
             )
             textdetector = fallback
-            cfg_module.textdetector = fallback
+            is_fallback = True
         if self.textdetect_thread.isRunning():
             LOGGER.warning('Terminating a running text detection thread.')
             self.textdetect_thread.terminate()
-        self.textdetect_thread.setTextDetector(textdetector)
+        self.textdetect_thread.setTextDetector(textdetector, is_fallback)
 
     def run_detect_region(self, rect, img_array, page_name: str, replace_if_full_page: bool = False):
         """Run text detection on a cropped region; emit detect_region_finished(page_name, blk_list, replace).
@@ -2249,6 +2255,7 @@ class ModuleManager(QObject):
     def setOCR(self, ocr: str = None):
         if ocr is None:
             ocr = cfg_module.ocr
+        is_fallback = False
         valid = GET_VALID_OCR()
         if ocr not in valid:
             if ocr in OCR.module_dict:
@@ -2265,7 +2272,7 @@ class ModuleManager(QObject):
                     ocr, fallback,
                 )
                 ocr = fallback
-                cfg_module.ocr = fallback
+                is_fallback = True
             else:
                 create_error_dialog(
                     ValueError(self.tr("No OCR module available.")),
@@ -2275,7 +2282,7 @@ class ModuleManager(QObject):
         if self.ocr_thread.isRunning():
             LOGGER.warning('Terminating a running OCR thread.')
             self.ocr_thread.terminate()
-        self.ocr_thread.setOCR(ocr)
+        self.ocr_thread.setOCR(ocr, is_fallback)
 
     def on_finish_translate_page(self, page_key: str):
         page_index = -1

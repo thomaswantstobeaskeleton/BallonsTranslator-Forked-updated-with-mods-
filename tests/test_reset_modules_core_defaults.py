@@ -67,7 +67,7 @@ def test_reset_modules_to_core_defaults_delegates_to_module_manager_for_fallback
 
     # Config is reset to core defaults first.
     assert fake_pcfg.module.textdetector == "ctd"
-    assert fake_pcfg.module.ocr == "manga_ocr"
+    assert fake_pcfg.module.ocr == "mit48px"
     assert fake_pcfg.module.inpainter == "aot"
     assert fake_pcfg.module.translator == "google"
     assert saved["count"] == 1
