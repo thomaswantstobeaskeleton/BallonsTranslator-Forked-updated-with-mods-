@@ -8,6 +8,7 @@ from utils.gpu_runtime import (
     build_gpu_install_plan,
     classify_amd_gpu,
     normalize_gpu_profile,
+    python_supports_pinned_cuda_torch,
 )
 
 
@@ -17,6 +18,10 @@ def _win_py312():
 
 def _win_py310():
     return type("Version", (), {"major": 3, "minor": 10})()
+
+
+def _win_py314():
+    return type("Version", (), {"major": 3, "minor": 14})()
 
 
 def test_normalize_gpu_profile_aliases():
@@ -46,6 +51,21 @@ def test_rx9070_auto_falls_back_to_directml_without_python312(monkeypatch):
     assert plan.resolved_profile == GPU_PROFILE_AMD_DIRECTML
     assert "torch-directml" in plan.torch_command
     assert plan.warnings
+
+
+def test_cuda_command_drops_version_pin_on_unsupported_python():
+    plan = build_gpu_install_plan("auto", python_version_info=_win_py314(), gpu_names=["NVIDIA GeForce RTX 3070 Ti"])
+    assert plan.resolved_profile == GPU_PROFILE_NVIDIA_CUDA
+    assert "torch==2.7.1" not in plan.torch_command
+    assert "cu118" not in plan.torch_command
+    assert plan.warnings
+
+
+def test_cuda_command_keeps_pin_on_supported_python():
+    assert python_supports_pinned_cuda_torch(_win_py312())
+    assert not python_supports_pinned_cuda_torch(_win_py314())
+    plan = build_gpu_install_plan("cuda", python_version_info=_win_py312(), gpu_names=["NVIDIA GeForce RTX 4070"])
+    assert "torch==2.7.1" in plan.torch_command
 
 
 def test_no_gpu_uses_cpu_profile():

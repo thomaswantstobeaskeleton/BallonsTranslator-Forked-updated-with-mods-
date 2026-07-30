@@ -11,7 +11,7 @@ import json
 from platform import platform
 from utils.gpu_runtime import (
     GPU_PROFILE_AUTO, GPU_PROFILE_CPU, GPU_PROFILE_NVIDIA_CUDA, GPU_PROFILE_AMD_DIRECTML,
-    GPU_PROFILE_AMD_ROCM_PREVIEW, build_gpu_install_plan, format_gpu_install_plan,
+    GPU_PROFILE_AMD_ROCM_PREVIEW, CPU_TORCH_COMMAND, build_gpu_install_plan, format_gpu_install_plan,
     has_amd_gpu, has_nvidia_gpu, classify_amd_gpu, detect_physical_gpus,
 )
 
@@ -720,7 +720,21 @@ def prepare_environment():
         install_torch_command = torch_command
         if (cuda_torch_reinstall_needed or rocm_torch_reinstall_needed) and "TORCH_COMMAND" not in os.environ and "--force-reinstall" not in install_torch_command:
             install_torch_command = f"{install_torch_command} --force-reinstall"
-        run(f'"{python}" -m {install_torch_command}', "Installing GPU runtime packages", "Couldn't install GPU runtime packages", live=True)
+        try:
+            run(f'"{python}" -m {install_torch_command}', "Installing GPU runtime packages", "Couldn't install GPU runtime packages", live=True)
+        except RuntimeError as exc:
+            # The GPU wheel index may not publish a build for this interpreter (issue #154).
+            # Don't abort startup: fall back to the CPU wheels so the app still runs.
+            if gpu_plan.resolved_profile == GPU_PROFILE_CPU or "TORCH_COMMAND" in os.environ:
+                raise
+            print(exc)
+            print(
+                "GPU PyTorch installation failed (no wheel for this Python version or index unreachable). "
+                "Falling back to CPU PyTorch wheels; GPU acceleration will be unavailable.\n"
+                "To use the GPU, install a Python version supported by the GPU wheels (3.12 is recommended) "
+                "or set TORCH_COMMAND to a pip command that works on this interpreter."
+            )
+            run(f'"{python}" -m {CPU_TORCH_COMMAND}', "Installing CPU runtime packages", "Couldn't install CPU runtime packages", live=True)
         req_updated = True
 
     if not check_req_file(args.requirements):

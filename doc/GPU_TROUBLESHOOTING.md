@@ -29,3 +29,17 @@ python -m pip install --upgrade --force-reinstall torch torchvision torchaudio -
 ```
 
 Then restart the app and check **Config → General → Device diagnostics**.
+
+## "No matching distribution found for torch" on a very new Python
+
+The pinned CUDA wheels (`cu118`) are only published for CPython 3.9–3.13. On a newer
+interpreter (for example 3.14) the launcher drops the version pin and uses the latest CUDA
+index instead; if that index has no wheel either, the launcher installs the CPU wheels and
+starts without GPU acceleration rather than aborting.
+
+To get GPU acceleration on such a setup, either install a supported Python version (3.12 is
+recommended) or point the launcher at a working command:
+
+```bash
+set TORCH_COMMAND=pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
