@@ -26,6 +26,10 @@ def _build_lang_map() -> Dict[str, str]:
     """
     Shared language display map for Gemini/Mistral translators.
     Matches the human-readable names used in other translators.
+
+    Every language of ``LANGMAP_GLOBAL`` is listed here: the entries with a
+    non-empty value are the ones offered in the source/target selectors, so a
+    missing entry silently hides that language (issue #151: Hungarian).
     """
     return {
         "简体中文": "Simplified Chinese",
@@ -35,15 +39,19 @@ def _build_lang_map() -> Dict[str, str]:
         "한국어": "Korean",
         "Tiếng Việt": "Vietnamese",
         "čeština": "Czech",
+        "Nederlands": "Dutch",
         "Français": "French",
         "Deutsch": "German",
+        "magyar nyelv": "Hungarian",
         "Italiano": "Italian",
         "Polski": "Polish",
         "Português": "Portuguese",
+        "Brazilian Portuguese": "Brazilian Portuguese",
         "limba română": "Romanian",
         "русский язык": "Russian",
         "Español": "Spanish",
         "Türk dili": "Turkish",
+        "украї́нська мо́ва": "Ukrainian",
         "Thai": "Thai",
         "Arabic": "Arabic",
         "Hindi": "Hindi",
