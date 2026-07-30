@@ -2309,10 +2309,32 @@ class ModuleManager(QObject):
         self.run_canvas_inpaint = True
         self.inpaint(**inpaint_dict)
     
+    def schedule_config_save(self, delay_ms: int = 1500):
+        """
+        Persist module parameters shortly after they change so they are not lost when
+        the app is killed or crashes before a clean exit
+        (upstream dmMaze/BallonsTranslator#913).
+        """
+        timer = getattr(self, '_config_save_timer', None)
+        if timer is None:
+            timer = self._config_save_timer = QTimer(self)
+            timer.setSingleShot(True)
+
+            def _save():
+                try:
+                    from utils.config import save_config
+                    save_config()
+                except Exception as e:
+                    LOGGER.debug('Deferred config save failed: %s', e)
+
+            timer.timeout.connect(_save)
+        timer.start(delay_ms)
+
     def on_translatorparam_edited(self, param_key: str, param_content: dict):
         if self.translator is not None:
             self.updateModuleSetupParam(self.translator, param_key, param_content)
             cfg_module.translator_params[self.translator.name] = self.translator.params
+            self.schedule_config_save()
 
     def on_test_translator(self):
         if self.translator is None:
@@ -2450,16 +2472,19 @@ class ModuleManager(QObject):
         if self.inpainter is not None:
             self.updateModuleSetupParam(self.inpainter, param_key, param_content)
             cfg_module.inpainter_params[self.inpainter.name] = self.inpainter.params
+            self.schedule_config_save()
 
     def on_textdetectorparam_edited(self, param_key: str, param_content: dict):
         if self.textdetector is not None:
             self.updateModuleSetupParam(self.textdetector, param_key, param_content)
             cfg_module.textdetector_params[self.textdetector.name] = self.textdetector.params
+            self.schedule_config_save()
 
     def on_ocrparam_edited(self, param_key: str, param_content: dict):
         if self.ocr is not None:
             self.updateModuleSetupParam(self.ocr, param_key, param_content)
             cfg_module.ocr_params[self.ocr.name] = self.ocr.params
+            self.schedule_config_save()
 
     def updateModuleSetupParam(self,
                                module: Union[InpainterBase, BaseTranslator],
