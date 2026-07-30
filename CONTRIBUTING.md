@@ -67,6 +67,27 @@ You can apply this patch or use the fork if that's easier.
 
 ---
 
+## UI translations (i18n)
+
+Display languages live in `translate/<locale>.ts` (source) and `translate/<locale>.qm` (compiled,
+loaded at runtime). Standard Qt widget strings ("Show details...", dialog buttons) come from Qt's
+own `qtbase_<locale>.qm`, which the launcher installs automatically — they don't belong in our files.
+
+Workflow:
+
+1. `python scripts/update_translation.py` — refresh the `.ts` files from the source code.
+2. Translate the `<translation type="unfinished">` entries (Qt Linguist, or any text editor).
+3. `python scripts/strip_contaminated_translations.py --check` — verify no entry was translated
+   into another language (the non-Chinese files used to be seeded from `zh_CN`, which showed a
+   Chinese UI to everyone else). Drop `--check` to clear such entries.
+4. `python scripts/compile_translation.py` — rebuild the `.qm` files, and commit them together
+   with the `.ts` files.
+
+Leave an entry empty/unfinished rather than guessing: Qt then falls back to the English source,
+which is always better than text in a language the user did not choose.
+
+---
+
 ## Upstream merge
 
 This fork is suitable for merging into the main [BallonsTranslator](https://github.com/dmMaze/BallonsTranslator) repository as a **separate experimental branch**. If you are a maintainer and want to integrate these changes, consider merging into an `experimental` or `pro-features` branch rather than `main`, so users can opt in.
