@@ -177,9 +177,12 @@ class LeftBar(Widget):
         actionImportTranslationTxt = QAction(self.tr("Import translation from TXT/markdown"), self)
         self.import_trans_txt = actionImportTranslationTxt.triggered
 
-        self.recentMenu = QMenu(self.tr("Open Recent"), self)
+        self.openBtn = OpenBtn()
 
-        openMenu = QMenu(self)
+        openMenu = QMenu(self.openBtn)
+        # Keep submenu ownership aligned with the visual popup chain for Wayland
+        # (upstream dmMaze/BallonsTranslator@1feb09b).
+        self.recentMenu = QMenu(self.tr("Open Recent"), openMenu)
         openMenu.addActions([actionOpenFolder, actionOpenImages, actionOpenACBFCBZ, actionOpenCBR, actionOpenProj])
         openMenu.addMenu(self.recentMenu)
         openMenu.addSeparator()
@@ -188,7 +191,6 @@ class LeftBar(Widget):
         openMenu.addAction(actionCloseProject)
         openMenu.addSeparator()
         openMenu.addAction(actionSaveProj)
-        self.openBtn = OpenBtn()
         self.openBtn.setFixedSize(28, 28)
         open_icon_path = osp.join(C.PROGRAM_PATH, 'icons', 'openbtn.svg')
         if osp.isfile(open_icon_path):
@@ -564,7 +566,10 @@ class TitleBar(Widget):
         self.viewToolBtn = TitleBarToolBtn(self)
         self.viewToolBtn.setText(self.tr('View'))
 
-        self.displayLanguageMenu = QMenu(self.tr("Display Language"), self)
+        # Keep submenu ownership aligned with the visual popup chain for Wayland
+        # (upstream dmMaze/BallonsTranslator@1feb09b).
+        self.viewMenu = viewMenu = QMenu(self.viewToolBtn)
+        self.displayLanguageMenu = QMenu(self.tr("Display Language"), viewMenu)
         self.lang_ac_group = lang_ac_group = QActionGroup(self)
         lang_ac_group.setExclusive(True)
         lang_actions = []
@@ -633,7 +638,6 @@ class TitleBar(Widget):
         helpMenu.addSeparator()
         helpMenu.addAction(updateFromGitHubAction)
 
-        self.viewMenu = viewMenu = QMenu(self.viewToolBtn)
         viewMenu.addMenu(self.displayLanguageMenu)
         viewMenu.addSeparator()
         # Phase 2: group per-panel toggles into a Panels submenu so the flat View list is shorter.

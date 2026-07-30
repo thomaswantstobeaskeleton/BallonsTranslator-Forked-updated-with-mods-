@@ -137,6 +137,23 @@ def normalize_block_text(blk: TextBlock) -> None:
     _filter_source_junk(blk.text)
 
 
+def apply_ocr_letter_case(blk: TextBlock):
+    """
+    Apply the letter case selected in Config -> OCR ("Letter case") to a block's text
+    (upstream dmMaze/BallonsTranslator#1248).
+    """
+    from utils.config import OCRTextPostprocess, pcfg
+    from utils.text_processing import capitalize_sentences
+
+    mode = getattr(pcfg.module, 'ocr_text_postprocess', OCRTextPostprocess.NONE)
+    if mode == OCRTextPostprocess.NONE or not isinstance(getattr(blk, 'text', None), list):
+        return
+    if mode == OCRTextPostprocess.CAPITALIZE:
+        blk.text = [capitalize_sentences(t) if t else t for t in blk.text]
+    elif mode == OCRTextPostprocess.UPPERCASE:
+        blk.text = [t.upper() if t else t for t in blk.text]
+
+
 class OCRBase(BaseModule):
 
     _postprocess_hooks = OrderedDict()
@@ -173,6 +190,7 @@ class OCRBase(BaseModule):
         self._ocr_blk_list(img, blk_list, *args, **kwargs)
         for blk in blk_list:
             normalize_block_text(blk)
+            apply_ocr_letter_case(blk)
         self._register_spell_check_hook()
         for callback_name, callback in self._postprocess_hooks.items():
             callback(textblocks=blk_list, img=img, ocr_module=self)

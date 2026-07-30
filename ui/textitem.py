@@ -686,6 +686,15 @@ class TextBlkItem(QGraphicsTextItem):
         self.blk.angle = angle
 
     def setVertical(self, vertical: bool):
+
+        # Switching layout drops the text interaction state; remember it so the user
+        # keeps editing at the same position (upstream dmMaze/BallonsTranslator@cdf5c6f).
+        is_editing = self.is_editting()
+        cursor_pos = None
+        if is_editing:
+            cursor = self.textCursor()
+            cursor_pos = (cursor.position(), cursor.anchor())
+
         if self.fontformat is not None:
             self.fontformat.vertical = vertical
 
@@ -710,17 +719,39 @@ class TextBlkItem(QGraphicsTextItem):
             layout = VerticalTextDocumentLayout(doc, self.fontformat)
         else:
             layout = HorizontalTextDocumentLayout(doc, self.fontformat)
-        
+
+        # Letter spacing must be reset for the other layout type: the vertical layout
+        # applies it itself, the horizontal one takes it from the document format
+        # (upstream dmMaze/BallonsTranslator@64a7365).
+        reset_spacing_val = 1 if vertical else self.fontformat.letter_spacing
+        cursor = QTextCursor(doc)
+        cursor.joinPreviousEditBlock()
+        char_fmt = QTextCharFormat()
+        char_fmt.setFontLetterSpacingType(QFont.SpacingType.PercentageSpacing)
+        char_fmt.setFontLetterSpacing(reset_spacing_val * 100)
+        cursor.select(QTextCursor.SelectionType.Document)
+        self.set_cursor_cfmt(cursor, char_fmt, True)
+        cursor.endEditBlock()
+
         self.layout = layout
         doc.setDocumentLayout(layout)
         layout.size_enlarged.connect(self.on_document_enlarged)
         layout.documentSizeChanged.connect(self.docSizeChanged)
-        
+
         if valid_layout:
             layout.setMaxSize(rect.width(), rect.height())
             self.setCenterTransform()
             self.repaint_background()
         self.doc_size_changed.emit(self.idx)
+
+        if is_editing:
+            self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+            self.setFocus()
+            cursor = QTextCursor(doc)
+            pos1, pos2 = cursor_pos
+            cursor.setPosition(min(pos1, pos2))
+            cursor.setPosition(max(pos1, pos2), QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
 
     def updateUndoSteps(self):
         self.old_undo_steps = self.document().availableUndoSteps()

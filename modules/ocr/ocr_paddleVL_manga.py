@@ -254,8 +254,12 @@ class PaddleOCRVLManga(OCRBase):
                         dtype=torch.float16 if self.device == "cuda" else torch.float32
                     ).to(self.device).eval()
 
+                    # sentencepiece on Windows is sensitive to being first loaded/used from a
+                    # PyQt QThread; add_prefix_space=None bypasses loading it completely.
+                    # (upstream dmMaze/BallonsTranslator#1203)
                     processor = AutoProcessor.from_pretrained(
-                        MODEL_PATH, trust_remote_code=True, use_fast=True
+                        MODEL_PATH, trust_remote_code=True, use_fast=True,
+                        add_prefix_space=None
                     )
             except ImportError as e:
                 if "SlidingWindowCache" in str(e):

@@ -587,6 +587,18 @@ class InpaintConfigPanel(ModuleConfigParseWidget):
         self.full_image_checker.clicked.connect(self._on_full_image_checker_changed)
         self.vlayout.addWidget(self.full_image_checker)
 
+        # Clip the mask to the detected text boxes (upstream dmMaze/BallonsTranslator#1213)
+        self.filter_mask_by_bboxes_checker = QCheckBox(self.tr('Filter mask by text boxes'))
+        self.filter_mask_by_bboxes_checker.setChecked(getattr(pcfg.module, 'filter_mask_by_bboxes', False))
+        self.filter_mask_by_bboxes_checker.setToolTip(self.tr(
+            'Only inpaint mask pixels that fall inside a detected text box. Use it when the mask spills over '
+            'artwork outside the text areas.'))
+        self.filter_mask_by_bboxes_checker.clicked.connect(self._on_filter_mask_by_bboxes_changed)
+        self.vlayout.addWidget(self.filter_mask_by_bboxes_checker)
+
+    def _on_filter_mask_by_bboxes_changed(self):
+        pcfg.module.filter_mask_by_bboxes = self.filter_mask_by_bboxes_checker.isChecked()
+
     def _on_full_image_checker_changed(self):
         pcfg.module.inpaint_full_image = self.full_image_checker.isChecked()
 
@@ -885,6 +897,27 @@ class OCRConfigPanel(ModuleConfigParseWidget):
         self.fontDetectChecker.setChecked(pcfg.module.ocr_font_detect)
         self.fontDetectChecker.clicked.connect(self.on_fontdetect_changed)
         self.vlayout.addWidget(self.fontDetectChecker)
+
+        # Letter case applied to every OCR result (upstream dmMaze/BallonsTranslator#1248)
+        from utils.config import OCRTextPostprocess
+        case_hl = QHBoxLayout()
+        case_hl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        case_hl.addWidget(QLabel(self.tr('Letter case:')))
+        self.letter_case_combobox = ConfigComboBox(scrollWidget=scrollWidget)
+        self._letter_case_modes = (OCRTextPostprocess.NONE, OCRTextPostprocess.CAPITALIZE, OCRTextPostprocess.UPPERCASE)
+        self.letter_case_combobox.addItems([self.tr('Keep as detected'), self.tr('Capitalize sentences'), self.tr('UPPERCASE')])
+        self.letter_case_combobox.setToolTip(self.tr(
+            'Applied to OCR output: "Capitalize sentences" turns ALL CAPS comic lettering into normal sentences.'))
+        mode = getattr(pcfg.module, 'ocr_text_postprocess', OCRTextPostprocess.NONE)
+        self.letter_case_combobox.setCurrentIndex(
+            self._letter_case_modes.index(mode) if mode in self._letter_case_modes else 0)
+        self.letter_case_combobox.currentIndexChanged.connect(self.on_letter_case_changed)
+        case_hl.addWidget(self.letter_case_combobox)
+        self.vlayout.addLayout(case_hl)
+
+    def on_letter_case_changed(self, index: int):
+        if 0 <= index < len(self._letter_case_modes):
+            pcfg.module.ocr_text_postprocess = self._letter_case_modes[index]
 
     def on_restore_empty_ocr(self):
         pcfg.restore_ocr_empty = self.restoreEmptyOCRChecker.isChecked()

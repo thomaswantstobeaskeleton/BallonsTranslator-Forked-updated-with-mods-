@@ -8,7 +8,7 @@ import tempfile
 
 from utils.registry import Registry
 from utils.textblock_mask import extract_ballon_mask, classify_bubble_colored
-from utils.imgproc_utils import enlarge_window
+from utils.imgproc_utils import enlarge_window, rotate_polygons, xywh2xyxypoly
 from utils.config import pcfg
 from utils.io_utils import imread, imwrite
 
@@ -212,6 +212,32 @@ def _rect_mask_from_blocks(textblock_list: List[TextBlock], im_w: int, im_h: int
         if x2 > x1 and y2 > y1:
             m[y1:y2, x1:x2] = 255
     return m
+
+
+def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = None) -> np.ndarray:
+    """
+    Keep only mask pixels inside detected text block rects, with a small margin.
+    Enabled by Config -> Inpainter -> "Filter mask by text boxes"
+    (upstream dmMaze/BallonsTranslator#1213).
+    """
+    if mask is None or not textblock_list:
+        return mask
+
+    rect_mask = np.zeros_like(mask)
+    for blk in textblock_list:
+        x1, y1, bbox_w, bbox_h = np.array(blk.bounding_rect()).astype(np.int64)
+        if bbox_w <= 0 or bbox_h <= 0:
+            continue
+        rect = xywh2xyxypoly(np.array([[x1, y1, bbox_w, bbox_h]]))
+        if blk.angle != 0:
+            rect = rotate_polygons([x1 + bbox_w / 2, y1 + bbox_h / 2], rect, -blk.angle)
+        rect = rect.reshape(-1, 4, 2).astype(np.int32)
+        cv2.fillPoly(rect_mask, [rect], 255)
+        cv2.polylines(rect_mask, [rect], True, 255, 1)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    rect_mask = cv2.dilate(rect_mask, kernel)
+    return cv2.bitwise_and(mask, rect_mask)
 
 
 def _block_center_xyxy(xyxy) -> tuple:
@@ -464,6 +490,9 @@ class InpainterBase(BaseModule):
                     mask = _rect_mask_from_blocks(textblock_list, im_w, im_h)
             except Exception:
                 pass
+        if getattr(pcfg.module, 'filter_mask_by_bboxes', False):
+            mask = filter_mask_by_bboxes(mask, textblock_list)
+
         # Subclasses (e.g. LamaLarge) can set mask_dilation_iterations if they need a small margin
         dilate_iter = getattr(self, 'mask_dilation_iterations', 0)
         if dilate_iter > 0:
@@ -925,7 +954,7 @@ class AOTInpainter(InpainterBase):
     _load_model_keys = {'model'}
 
     download_file_list = [{
-            'url': 'https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/inpainting.ckpt',
+            'url': 'https://huggingface.co/dreMaz/mit_models/resolve/main/aot_inpainter.ckpt',
             'sha256_pre_calculated': '878d541c68648969bc1b042a6e997f3a58e49b6c07c5636ad55130736977149f',
             'files': 'data/models/aot_inpainter.ckpt',
     }]
@@ -1043,7 +1072,7 @@ class LamaInpainterMPE(InpainterBase):
     }
 
     download_file_list = [{
-            'url': 'https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/inpainting_lama_mpe.ckpt',
+            'url': 'https://huggingface.co/dreMaz/mit_models/resolve/main/lama_mpe.ckpt',
             'sha256_pre_calculated': 'd625aa1b3e0d0408acfd6928aa84f005867aa8dbb9162480346a4e20660786cc',
             'files': 'data/models/lama_mpe.ckpt',
     }]

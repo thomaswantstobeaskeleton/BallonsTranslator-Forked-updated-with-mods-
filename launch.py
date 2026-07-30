@@ -605,6 +605,10 @@ def main():
     from ui.mainwindow import MainWindow
     open_path = (args.proj_dir or getattr(args, 'path', '') or '').strip()
     ballontrans = MainWindow(app, config, open_dir=open_path, **vars(args))
+    # Destroy the Qt window tree before SIP performs interpreter-exit cleanup,
+    # which otherwise crashes on quit (upstream dmMaze/BallonsTranslator@f313daa).
+    delete_on_close = getattr(Qt, 'WidgetAttribute', Qt).WA_DeleteOnClose
+    ballontrans.setAttribute(delete_on_close, True)
     global BT
     BT = ballontrans
     BT.restart_signal.connect(restart)
@@ -648,7 +652,9 @@ def main():
 
             QTimer.singleShot(500, offer_context_menu)
 
-    sys.exit(app.exec())
+    # Let this frame release Qt objects before SIP's interpreter-exit cleanup
+    # (upstream dmMaze/BallonsTranslator@d249515).
+    return app.exec()
 
 def is_amd_gpu():
     return has_amd_gpu(detect_physical_gpus())
@@ -802,4 +808,4 @@ def prepare_environment():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -4084,10 +4084,9 @@ class SceneTextManager(QObject):
             self.textEditList.clearAllSelected()
 
         if idx < len(self.textblk_item_list):
+            # Disabling the cache here broke the text item background rendering
+            # (upstream dmMaze/BallonsTranslator@6d87898).
             blk_item = self.textblk_item_list[idx]
-            sender = self.sender()
-            if isinstance(sender, TransTextEdit):
-                blk_item.setCacheMode(QGraphicsItem.CacheMode.NoCache)
             self.canvas.gv.ensureVisible(blk_item)
             self.txtblkShapeControl.setBlkItem(blk_item)
 

@@ -21,6 +21,19 @@ class RunStatus:
     FIN_ALL = 15
 
 
+class OCRTextPostprocess:
+    """Letter case applied to OCR results (upstream dmMaze/BallonsTranslator#1248).
+
+    >>> OCRTextPostprocess.CAPITALIZE
+    'capitalize'
+    """
+
+    NONE = 'none'
+    CAPITALIZE = 'capitalize'
+    UPPERCASE = 'uppercase'
+    Valid = (NONE, CAPITALIZE, UPPERCASE)
+
+
 @nested_dataclass
 class ModuleConfig(Config):
     textdetector: str = 'ctd'
@@ -35,11 +48,15 @@ class ModuleConfig(Config):
     enable_tertiary_detect: bool = False
     textdetector_tertiary: str = ''
     keep_exist_textlines: bool = False
+    # Clip the inpaint mask to the detected text boxes (upstream dmMaze/BallonsTranslator#1213)
+    filter_mask_by_bboxes: bool = False
     enable_ocr: bool = True
     enable_translate: bool = True
     enable_inpaint: bool = True
     # 是否在 OCR 后进行字体检测（默认不启用）
     ocr_font_detect: bool = False
+    # Letter case applied to OCR results: none | capitalize | uppercase
+    ocr_text_postprocess: str = OCRTextPostprocess.NONE
     textdetector_params: Dict = field(default_factory=lambda: dict())
     # Allow text detection to set box rotation when text is slanted (horizontal only). When off, horizontal boxes stay 0°.
     allow_detection_box_rotation: bool = False
@@ -453,6 +470,8 @@ class ModuleConfig(Config):
         return (self.enable_detect or self.enable_ocr or self.enable_translate or self.enable_inpaint) is False
 
     def __post_init__(self):
+        if self.ocr_text_postprocess not in OCRTextPostprocess.Valid:
+            self.ocr_text_postprocess = OCRTextPostprocess.NONE
         self.update_finish_code()
 
     def update_finish_code(self):

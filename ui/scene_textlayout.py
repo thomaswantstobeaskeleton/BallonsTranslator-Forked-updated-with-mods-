@@ -105,6 +105,24 @@ def punc_actual_rect_cached(cached_args: LruIgnoreArg, char: str, family: str, s
     return punc_actual_rect(cached_args.line, family, size, weight, italic, stroke_width, h, w, cached_args.space_shift)
 
 
+def _block_cursor_position(block: QTextBlock, cursor_position: int) -> int:
+    """
+    Cursor position inside `block`, or -1 when the cursor is not in it.
+    Handles the IME preedit encoding, where Qt passes -(preeditCursor + 2).
+    (upstream dmMaze/BallonsTranslator@3c8392d)
+    """
+    layout = block.layout()
+    if cursor_position < -1:
+        if not layout.preeditAreaText():
+            return -1
+        return layout.preeditAreaPosition() - (cursor_position + 2)
+
+    block_position = block.position()
+    if block_position <= cursor_position < block_position + block.length():
+        return cursor_position - block_position
+    return -1
+
+
 class CharFontFormat:
     def __init__(self, fcmt: QTextCharFormat) -> None:
         font = fcmt.font()
@@ -474,7 +492,9 @@ class VerticalTextDocumentLayout(SceneTextLayout):
                         non_bracket_br = cfmt.punc_actual_rect(line, char, cache=True, space_shift=space_shift)
                         yoff = -non_bracket_br[1] - non_bracket_br[3]
                         if char in PUNSET_BRACKETL:
-                            xoff = 0
+                            # a left bracket opening the block is shifted like any other
+                            # rotated punctuation (upstream dmMaze/BallonsTranslator@f9c2762)
+                            xoff = -non_bracket_br[0] if ii == 0 else 0
                         else:
                             xoff = -non_bracket_br[0]
 
@@ -532,7 +552,7 @@ class VerticalTextDocumentLayout(SceneTextLayout):
             has_selection = True
             selection = context_sel[0]
 
-
+        fm = None
         while block.isValid():
             blk_no = block.blockNumber()
             blpos, bllen = block.position(), block.length()
@@ -543,7 +563,7 @@ class VerticalTextDocumentLayout(SceneTextLayout):
             
             line_spaces_lst = self.line_spaces_lst[blk_no]
 
-            if context.cursorPosition >= blpos and context.cursorPosition < blpos + bllen:
+            if _block_cursor_position(block, context.cursorPosition) >= 0:
                 cursor_block = block
 
             for ii in range(layout.lineCount()):
@@ -600,36 +620,36 @@ class VerticalTextDocumentLayout(SceneTextLayout):
             bllen = block.length()
             blk_no = block.blockNumber()
             layout = block.layout()
-            if context.cursorPosition < -1:
-                cpos = layout.preeditAreaPosition() - (cpos + 2)
-            else:
-                cpos = context.cursorPosition - blpos
+            cpos = _block_cursor_position(block, context.cursorPosition)
 
-            line = layout.lineForTextPosition(cpos)
-            if line.isValid():
-                
-                pos = line.position()                
-                x, y = pos.x(), pos.y()
-                if line.textLength() == 0:
-                    fm = QFontMetricsF(block.charFormat().font())
-                else:
-                    num_rspaces, num_lspaces, char_yoffset_lst, line_pos = self.line_spaces_lst[blk_no][line.lineNumber()]
-                    yidx = cpos - line_pos
-                    if yidx >= 0 < len(char_yoffset_lst):
-                        y = char_yoffset_lst[yidx]
+            if cpos >= 0:
+                line = layout.lineForTextPosition(cpos)
+                if line.isValid():
 
-                painter.setCompositionMode(QPainter.CompositionMode.RasterOp_NotDestination)
-                painter.fillRect(QRectF(x, y, fm.height(), 2), painter.pen().brush())
-                if self.has_selection == has_selection:
-                    if C.USE_PYSIDE6:
-                        self.update.emit()
+                    pos = line.position()
+                    x, y = pos.x(), pos.y()
+                    if line.textLength() == 0 or fm is None:
+                        fm = QFontMetricsF(block.charFormat().font())
                     else:
-                        self.update.emit(QRectF(x, y, fm.height(), 2))
-                else:
-                    if C.USE_PYSIDE6:
-                        self.update.emit()
+                        num_rspaces, num_lspaces, char_yoffset_lst, line_pos = self.line_spaces_lst[blk_no][line.lineNumber()]
+                        yidx = cpos - line_pos
+                        # chained comparison never bounded yidx -> IndexError while typing
+                        # (upstream dmMaze/BallonsTranslator@391c8eb)
+                        if 0 <= yidx < len(char_yoffset_lst):
+                            y = char_yoffset_lst[yidx]
+
+                    painter.setCompositionMode(QPainter.CompositionMode.RasterOp_NotDestination)
+                    painter.fillRect(QRectF(x, y, fm.height(), 2), painter.pen().brush())
+                    if self.has_selection == has_selection:
+                        if C.USE_PYSIDE6:
+                            self.update.emit()
+                        else:
+                            self.update.emit(QRectF(x, y, fm.height(), 2))
                     else:
-                        self.update.emit(QRectF(0, 0, self.max_width, self.max_height))
+                        if C.USE_PYSIDE6:
+                            self.update.emit()
+                        else:
+                            self.update.emit(QRectF(0, 0, self.max_width, self.max_height))
             self.has_selection = has_selection  # update this flag when drawing the cursor
         painter.restore()
 
@@ -736,7 +756,10 @@ class VerticalTextDocumentLayout(SceneTextLayout):
             available_height = self.available_height + doc_margin
             text_len = line.textLength()
             end_char = char_idx + text_len >= blk_text_len
-            
+
+            is_first_lbracket = False
+            _lbracket_shift = 0
+
             if char_idx + text_len > blk_text_len:
                 ypos = ypos_list[-1] if len(ypos_list) > 0 else 0
                 blk_line_spaces.append([0, 0, [ypos], char_idx])
@@ -769,6 +792,11 @@ class VerticalTextDocumentLayout(SceneTextLayout):
 
                 tbr_h = cfmt.tbr.height() + let_sp_offset
                 char = blk_text[char_idx]
+                # Compensate the shift applied to a rotated left bracket that opens the block
+                # (upstream dmMaze/BallonsTranslator@f9c2762)
+                is_first_lbracket = char_idx - num_lspaces == 0 and char in PUNSET_BRACKETL
+                if is_first_lbracket:
+                    _lbracket_shift = -cfmt.punc_actual_rect(line, char, cache=True, space_shift=space_shift)[0]
                 is_tcy = char_idx in tcy_starts and text_len >= tcy_starts.get(char_idx, 1)
                 if is_tcy:
                     tbr_h = max(cfmt.tbr.height(), line.height()) + let_sp_offset
@@ -807,6 +835,8 @@ class VerticalTextDocumentLayout(SceneTextLayout):
                     self.draw_shifted = max(self.draw_shifted, shifted)
 
             char_yoffset_lst = [line_y_offset]
+            if is_first_lbracket:
+                char_yoffset_lst[0] += _lbracket_shift
             for _ in range(num_lspaces):
                 char_yoffset_lst.append(min(available_height - tbr_h, char_yoffset_lst[-1] + space_w))
             blk_line_spaces.append([num_rspaces, num_lspaces, char_yoffset_lst, char_idx - num_lspaces])
@@ -1093,7 +1123,7 @@ class HorizontalTextDocumentLayout(SceneTextLayout):
             blpos = block.position()
             layout = block.layout()
             bllen = block.length()
-            if context.cursorPosition >= blpos and context.cursorPosition < blpos + bllen:
+            if _block_cursor_position(block, context.cursorPosition) >= 0:
                 cursor_block = block
             layout = block.layout()
             blpos = block.position()
@@ -1131,11 +1161,9 @@ class HorizontalTextDocumentLayout(SceneTextLayout):
             blpos = block.position()
             bllen = block.length()
             layout = block.layout()
-            if context.cursorPosition < -1:
-                cpos = layout.preeditAreaPosition() - (cpos + 2)
-            else:
-                cpos = context.cursorPosition - blpos
-            layout.drawCursor(painter, QPointF(0, 0), cpos, 1)
+            cpos = _block_cursor_position(block, context.cursorPosition)
+            if cpos >= 0:
+                layout.drawCursor(painter, QPointF(0, 0), cpos, 1)
         painter.restore()
 
 
