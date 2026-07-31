@@ -357,6 +357,10 @@ def main():
                 sys_locale = 'zh_CN'
     except Exception:
         pass
+    # Without a matching .qm the app is English anyway; keeping the raw locale name
+    # (e.g. "C" on a system without a locale) only produces a missing-file warning
+    # and a display language the selector cannot show.
+    untranslated_fallback = 'English'
     if osp.exists(osp.join(trans_dir, sys_locale + '.qm')):
         shared.DEFAULT_DISPLAY_LANG = sys_locale
     else:
@@ -368,11 +372,11 @@ def main():
                         shared.DEFAULT_DISPLAY_LANG = code
                         break
                 else:
-                    shared.DEFAULT_DISPLAY_LANG = sys_locale
+                    shared.DEFAULT_DISPLAY_LANG = untranslated_fallback
             else:
-                shared.DEFAULT_DISPLAY_LANG = sys_locale
+                shared.DEFAULT_DISPLAY_LANG = untranslated_fallback
         except Exception:
-            shared.DEFAULT_DISPLAY_LANG = sys_locale
+            shared.DEFAULT_DISPLAY_LANG = untranslated_fallback
     shared.HEADLESS = args.headless
     shared.HEADLESS_CONTINUOUS = getattr(args, 'headless_continuous', False)
     shared.load_cache()

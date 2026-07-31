@@ -752,14 +752,17 @@ class ProgramConfig(Config):
                     dl['translator_params'] = translator_params
                 config_dict['module'] = dl
 
-        if 'module' in config_dict:
+        if isinstance(config_dict.get('module'), dict):
+            # Missing keys must not discard the whole config: a hand-edited or
+            # partially written config.json should still load what it does contain.
             module_cfg = config_dict['module']
-            trans_params = module_cfg['translator_params']
+            trans_params = module_cfg.get('translator_params')
             repl_pairs = {'baidu': 'Baidu', 'caiyun': 'Caiyun', 'chatgpt': 'ChatGPT', 'Deepl': 'DeepL', 'papago': 'Papago'}
-            for k, i in repl_pairs.items():
-                if k in trans_params:
-                    trans_params[i] = trans_params.pop(k)
-            if module_cfg['translator'] in repl_pairs:
+            if isinstance(trans_params, dict):
+                for k, i in repl_pairs.items():
+                    if k in trans_params:
+                        trans_params[i] = trans_params.pop(k)
+            if module_cfg.get('translator') in repl_pairs:
                 module_cfg['translator'] = repl_pairs[module_cfg['translator']]
 
         # Legacy: configs that lack this key or have null used to download all models. Default to core-only (Issue #15).

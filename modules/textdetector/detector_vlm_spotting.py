@@ -22,6 +22,7 @@ try:
     import torch
     _VLM_SPOT_AVAILABLE = True
 except ImportError:
+    _VLM_SPOT_AVAILABLE = False
     import logging
     logging.getLogger("BallonsTranslator").debug(
         "VLM spotting detectors not available. Install: pip install transformers torch pillow accelerate"
